@@ -1,8 +1,10 @@
 import { CATEGORIES, CAT, NUTRITION } from './data.js';
 import {
-  load, save, migrate, defaultState, storageOk, today, monthKey, addMonths, monthName, fmtDate,
+  load, save, saveRaw, resetSnapshot, setOnChange, migrate, defaultState, storageOk, today, monthKey, addMonths, monthName, fmtDate,
   isoWeek, uid, money, num, esc,
 } from './store.js';
+import { connect, syncNow, disconnect, getConfig, SyncError } from './sync.js';
+import { merge } from './merge.js';
 import { decodeBytes, parseCSV, findHeaderRow, detectColumns, rowsToOperations, opHash } from './csv.js';
 import { categorize, merchantKey } from './categorize.js';
 import {
@@ -10,6 +12,7 @@ import {
 } from './analytics.js';
 
 let state = load();
+resetSnapshot(state);
 const ui = {
   month: monthKey(today()),
   opsMonth: monthKey(today()),
@@ -44,6 +47,107 @@ function toast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg; t.classList.add('show');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 3200);
+}
+
+// ---------- синхронизация ----------
+const sync = { busy: false, again: false, timer: null, error: '', note: '', tokenDraft: '' };
+let pendingRender = false;
+
+const isEditing = () => {
+  const a = document.activeElement;
+  return a && $app.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName);
+};
+function safeRender() {
+  if (isEditing()) { pendingRender = true; return; }
+  pendingRender = false; render();
+}
+document.addEventListener('focusout', () => setTimeout(() => { if (pendingRender && !isEditing()) safeRender(); }, 0));
+
+function applyRemote(remoteMerged) {
+  state = merge(state, remoteMerged); // правки, сделанные пока шёл обмен, не теряются
+  saveRaw(state);
+  resetSnapshot(state);
+  safeRender();
+}
+
+function scheduleSync(delay = 2500) {
+  if (!getConfig()) return;
+  clearTimeout(sync.timer);
+  sync.timer = setTimeout(runSync, delay);
+}
+
+async function runSync() {
+  if (!getConfig()) return;
+  if (sync.busy) { sync.again = true; return; }
+  sync.busy = true; sync.error = ''; showSync();
+  try {
+    const r = await syncNow(state);
+    if (r && r.changedLocal) applyRemote(r.state);
+  } catch (e) {
+    sync.error = e instanceof SyncError ? e.message : 'Не удалось синхронизировать.';
+    console.error(e);
+  } finally {
+    sync.busy = false;
+    showSync();
+    if (sync.again) { sync.again = false; runSync(); }
+  }
+}
+
+function syncTime(ts) {
+  if (!ts) return 'ещё не было';
+  const d = new Date(ts);
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return d.toDateString() === new Date().toDateString() ? `сегодня в ${hm}` : `${d.getDate()}.${String(d.getMonth() + 1).padStart(2, '0')} в ${hm}`;
+}
+
+function showSync() {
+  const el = document.getElementById('sync-status');
+  const cfg = getConfig();
+  if (!cfg) { el.hidden = true; }
+  else {
+    el.hidden = false;
+    el.className = 'sync' + (sync.error ? ' bad' : '');
+    el.textContent = sync.busy ? 'Синхронизация…' : sync.error ? 'Ошибка синхронизации' : `Синхронизировано ${syncTime(cfg.last)}`;
+    el.title = sync.error || 'Данные зашифрованы и синхронизируются через GitHub Gist';
+  }
+  const box = document.getElementById('sync-box');
+  if (box && !isEditing()) box.innerHTML = syncBox();
+}
+
+setOnChange(() => scheduleSync());
+document.addEventListener('visibilitychange', () => {
+  const cfg = getConfig();
+  if (document.visibilityState === 'visible' && cfg && Date.now() - (cfg.last || 0) > 20000) runSync();
+});
+window.addEventListener('online', () => runSync());
+
+function syncBox() {
+  const cfg = getConfig();
+  if (cfg) {
+    return `<p><span class="status ${sync.error ? 'bad' : 'good'}">${sync.error ? 'Ошибка' : 'Подключено'}</span>
+      <span class="muted">Последняя синхронизация: ${syncTime(cfg.last)}.</span></p>
+      ${sync.error ? `<p class="callout bad">${esc(sync.error)}</p>` : ''}
+      <div class="row">
+        <button data-act="syncnow"${sync.busy ? ' disabled' : ''}>${sync.busy ? 'Синхронизация…' : 'Синхронизировать сейчас'}</button>
+        <a class="btn" href="https://gist.github.com/${esc(cfg.gistId)}" target="_blank" rel="noopener">Открыть gist</a>
+        <button data-act="syncoff">Отключить на этом устройстве</button>
+      </div>
+      <p class="muted small">Отключение удаляет с этого устройства токен и ключ. Данные в браузере и зашифрованная копия в gist остаются.</p>`;
+  }
+  return `<p>Данные шифруются на устройстве вашим паролем и хранятся в секретном gist на вашем GitHub. Без пароля их не прочитать ни GitHub, ни тому, кто узнает ссылку на gist.</p>
+  <ol>
+    <li>Создайте токен: <a href="https://github.com/settings/tokens/new?scopes=gist&description=Kopilka%20sync" target="_blank" rel="noopener">github.com → новый токен</a>. Право <b>gist</b> уже отмечено, другие не нужны. Срок действия, например, 1 год. Скопируйте токен (начинается с ghp_).</li>
+    <li>Придумайте пароль синхронизации. Это не пароль от GitHub, и он одинаковый на всех устройствах. Если его забыть, облачную копию не расшифровать.</li>
+    <li>Нажмите «Подключить». На втором устройстве сделайте то же самое с тем же паролем: данные двух устройств объединятся.</li>
+  </ol>
+  <form class="grid-form" data-form="syncconnect" autocomplete="off">
+    <label class="field">Токен GitHub<input type="password" name="token" required autocomplete="off" spellcheck="false" placeholder="ghp_…" value="${esc(sync.tokenDraft)}"></label>
+    <label class="field">Пароль синхронизации<input type="password" name="pass" required minlength="8" autocomplete="new-password"></label>
+    <label class="field">Пароль ещё раз<input type="password" name="pass2" required minlength="8" autocomplete="new-password"></label>
+    <div class="field"><span>&nbsp;</span><button class="primary" type="submit">Подключить</button></div>
+  </form>
+  ${sync.note ? `<p class="muted">${esc(sync.note)}</p>` : ''}
+  ${sync.error ? `<p class="callout bad">${esc(sync.error)}</p>` : ''}`;
 }
 
 function applyTheme() {
@@ -544,8 +648,10 @@ function vSettings() {
   <div class="row" style="margin-top:10px"><button data-act="recat">Перераспределить загруженные операции по правилам</button></div>
   <p class="muted small">Операции, где категория выбрана вручную, не трогаются.</p>
 
+  <h2>Синхронизация между устройствами</h2>
+  <div id="sync-box">${syncBox()}</div>
   <h2>Данные</h2>
-  <p class="muted small">Всё хранится в этом браузере. Чтобы перенести данные на телефон или не потерять их при очистке браузера, сохраняйте копию.</p>
+  <p class="muted small">Данные хранятся в этом браузере${getConfig() ? ' и в зашифрованном gist' : ''}. Копия в файле пригодится как резервная или для переноса без синхронизации. Файл не зашифрован.</p>
   <div class="row">
     <button data-act="export">Сохранить копию (JSON)</button>
     <label class="btn"><input type="file" id="jsonfile" accept=".json,application/json" hidden>Загрузить копию</label>
@@ -633,6 +739,11 @@ document.addEventListener('click', e => {
       if (c.cat !== t.cat || c.amount !== t.amount) { t.cat = c.cat; t.amount = c.amount; n++; }
     }
     commit(`Изменено операций: ${n}`);
+  } else if (act === 'syncnow') runSync();
+  else if (act === 'syncoff') {
+    if (confirm('Отключить синхронизацию на этом устройстве? Данные останутся и здесь, и в gist.')) {
+      disconnect().then(() => { sync.error = ''; showSync(); render(); toast('Синхронизация отключена'); });
+    }
   } else if (act === 'export') {
     download(`kopilka-${today()}.json`, JSON.stringify(state, null, 1), 'application/json');
   } else if (act === 'exportcsv') {
@@ -640,8 +751,11 @@ document.addEventListener('click', e => {
       state.tx.slice().sort((a, b) => a.date.localeCompare(b.date)).map(t => [t.date, CAT[t.cat]?.name || t.cat, String(t.amount).replace('.', ','), t.note || '']));
     download(`kopilka-operacii-${today()}.csv`, '﻿' + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(';')).join('\n'), 'text/csv');
   } else if (act === 'reset') {
-    if (confirm('Удалить все операции, настройки и записи веса из этого браузера? Сначала стоит сохранить копию.')) {
-      state = defaultState(); commit('Данные удалены');
+    const synced = !!getConfig();
+    if (confirm(`Удалить все операции, настройки и записи веса из этого браузера? Сначала стоит сохранить копию.${synced ? ' Синхронизация на этом устройстве отключится, зашифрованная копия в gist останется.' : ''}`)) {
+      (synced ? disconnect() : Promise.resolve()).then(() => {
+        state = defaultState(); saveRaw(state); resetSnapshot(state); sync.error = ''; showSync(); render(); toast('Данные удалены из этого браузера');
+      });
     }
   }
 });
@@ -730,6 +844,22 @@ document.addEventListener('submit', e => {
     if (!kg) return;
     state.weights = state.weights.filter(w => w.date !== fd.date).concat({ date: fd.date || today(), kg });
     commit('Вес записан');
+  } else if (kindF === 'syncconnect') {
+    if (fd.pass !== fd.pass2) { sync.error = 'Пароли не совпадают.'; showSync(); return; }
+    if (fd.pass.length < 8) { sync.error = 'Пароль должен быть не короче 8 символов.'; showSync(); return; }
+    const btn = form.querySelector('button'); btn.disabled = true; btn.textContent = 'Подключаю…';
+    sync.error = ''; sync.busy = true; sync.tokenDraft = fd.token;
+    connect(fd.token, fd.pass, state).then(r => {
+      sync.busy = false; sync.note = ''; sync.tokenDraft = '';
+      applyRemote(r.state);
+      showSync(); render();
+      toast(r.created ? 'Синхронизация включена: создан зашифрованный gist' : 'Подключено: данные устройств объединены');
+    }).catch(e => {
+      sync.busy = false;
+      sync.error = e instanceof SyncError ? e.message : 'Не удалось подключиться.';
+      console.error(e);
+      document.activeElement?.blur(); showSync();
+    });
   } else if (kindF === 'ruleadd') {
     const m = fd.match.trim().toLowerCase();
     if (!m) return;
@@ -740,3 +870,5 @@ document.addEventListener('submit', e => {
 });
 
 render();
+showSync();
+if (getConfig()) runSync();

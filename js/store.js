@@ -1,4 +1,5 @@
 import { CATEGORIES, BASKET } from './data.js';
+import { emptyMeta, makeSnapshot, stamp } from './merge.js';
 
 const KEY = 'kopilka.v1';
 
@@ -27,6 +28,7 @@ export function defaultState() {
       history: [],
     },
     weights: [],
+    meta: emptyMeta(),
   };
 }
 
@@ -39,8 +41,21 @@ export function load() {
   try { return migrate(JSON.parse(raw)); } catch { return defaultState(); }
 }
 
-export function save(state) {
+// Снимок последнего сохранения: по нему save() понимает, что изменилось, и помечает это для синхронизации.
+let snap = null;
+let onChange = null;
+export function setOnChange(fn) { onChange = fn; }
+export function resetSnapshot(state) { snap = makeSnapshot(state); }
+
+export function saveRaw(state) {
   try { localStorage.setItem(KEY, JSON.stringify(state)); storageOk = true; } catch { storageOk = false; }
+}
+
+export function save(state) {
+  const changed = snap ? stamp(state, snap) : false;
+  saveRaw(state);
+  snap = makeSnapshot(state);
+  if (changed && onChange) onChange();
 }
 
 // Дополняет старые или импортированные данные недостающими полями.
@@ -54,6 +69,8 @@ export function migrate(s) {
   out.tx = Array.isArray(s.tx) ? s.tx : [];
   out.rules = Array.isArray(s.rules) ? s.rules : [];
   out.weights = Array.isArray(s.weights) ? s.weights : [];
+  const m = s.meta && typeof s.meta === 'object' ? s.meta : {};
+  out.meta = { sections: { ...(m.sections || {}) }, deleted: { ...(m.deleted || {}) } };
   return out;
 }
 

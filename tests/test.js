@@ -3,6 +3,7 @@ import { parseCSV, findHeaderRow, detectColumns, rowsToOperations, parseAmount, 
 import { categorize, merchantKey } from '../js/categorize.js';
 import { defaultState, isoWeek, addMonths, monthKey, today } from '../js/store.js';
 import { plan, monthSummary, forecast, habits, weightTrend, verdict } from '../js/analytics.js';
+import { merge, makeSnapshot, stamp, canon } from '../js/merge.js';
 
 let fails = 0, passes = 0;
 function eq(name, got, want) {
@@ -98,5 +99,48 @@ eq('habits empty', habits(defaultState()).insights, []);
 eq('weight none', weightTrend([{ date: '2026-11-01', kg: 70 }]), null);
 const wt = weightTrend([{ date: '2026-11-01', kg: 70 }, { date: '2026-11-08', kg: 70.3 }, { date: '2026-11-15', kg: 70.6 }]);
 eq('weight trend', Math.round(wt.perWeek * 100) / 100, 0.3);
+
+// --- синхронизация: пометки и слияние
+{
+  const T = Date.now();
+  const A = defaultState(); const B = defaultState();
+  let snapA = makeSnapshot(A), snapB = makeSnapshot(B);
+  A.settings.income = 150000; A.tx.push({ id: 'x1', date: '2026-11-01', cat: 'food', amount: 100, note: '' }, { id: 'x2', date: '2026-11-02', cat: 'cafe', amount: 300, note: '' });
+  eq('stamp changed', stamp(A, snapA, T + 1000), true);
+  eq('stamp section', A.meta.sections.settings, T + 1000);
+  eq('stamp tx u', A.tx.map(t => t.u), [T + 1000, T + 1000]);
+  snapA = makeSnapshot(A);
+  eq('stamp nothing', stamp(A, snapA, T + 1100), false);
+  // B получает данные A
+  let M = merge(B, A);
+  eq('merge pulls tx', M.tx.map(t => t.id), ['x1', 'x2']);
+  eq('merge pulls settings', M.settings.income, 150000);
+  // B удаляет x1, правит x2, добавляет x3; A тем временем добавляет x4
+  snapB = makeSnapshot(M);
+  M.tx = M.tx.filter(t => t.id !== 'x1');
+  M.tx.find(t => t.id === 'x2').amount = 350;
+  M.tx.push({ id: 'x3', date: '2026-11-03', cat: 'food', amount: 50, note: '' });
+  stamp(M, snapB, T + 2000);
+  A.tx.push({ id: 'x4', date: '2026-11-04', cat: 'food', amount: 70, note: '' });
+  stamp(A, snapA, T + 2100);
+  const R = merge(A, M);
+  eq('merge ids', R.tx.map(t => t.id), ['x2', 'x3', 'x4']);
+  eq('merge edit wins', R.tx.find(t => t.id === 'x2').amount, 350);
+  eq('merge symmetric', canon(merge(M, A).tx), canon(R.tx));
+  eq('merge idempotent', canon(merge(R, R)), canon(R));
+  // устаревшая версия не воскрешает удалённое
+  eq('tombstone holds', merge(R, A).tx.some(t => t.id === 'x1'), false);
+  // настройки: побеждает более поздняя правка
+  const C = merge(R, R); const snapC = makeSnapshot(C);
+  C.settings.rent = 40000; stamp(C, snapC, T + 3000);
+  eq('lww settings', merge(R, C).settings.rent, 40000);
+  eq('lww settings reverse', merge(C, R).settings.rent, 40000);
+  // вес: удаление и повторная запись за ту же дату
+  const W = defaultState(); W.weights = [{ date: '2026-11-01', kg: 70 }]; let sw = makeSnapshot(W);
+  stamp(W, makeSnapshot(defaultState()), T + 10); sw = makeSnapshot(W);
+  W.weights = []; stamp(W, sw, T + 20); sw = makeSnapshot(W);
+  W.weights = [{ date: '2026-11-01', kg: 70.4 }]; stamp(W, sw, T + 30);
+  eq('weight re-add', merge(W, W).weights.map(w => w.kg), [70.4]);
+}
 
 print(`${passes} passed, ${fails} failed`);
