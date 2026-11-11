@@ -8,7 +8,8 @@ import { categorize, merchantKey } from './categorize.js';
 import {
   plan, limitFor, monthSummary, verdict, history, streak, forecast, habits, weightTrend, LIMITED, WD,
 } from './analytics.js';
-import { unlock, syncNow, persistLocal, lock, forget, sessionInfo, hasVault, isUnlocked, SyncError, NeedCreate } from './sync.js';
+import { unlock, recover, changePassword, newRecovery, syncNow, persistLocal, lock, forget, sessionInfo, hasVault, isUnlocked, SyncError, NeedCreate } from './sync.js';
+import { weakPassword, codeLooksValid } from './guard.js';
 import { merge } from './merge.js';
 import { icon, catIcon } from './icons.js';
 
@@ -129,8 +130,11 @@ function showSync() {
 }
 setOnChange(() => scheduleSync());
 // Через 10 минут в фоне копилка запирается: ключ и токен уходят из памяти.
+// То же самое — после 10 минут без касаний и нажатий при открытой странице.
 const AUTOLOCK = 10 * 60 * 1000;
-let hiddenAt = 0;
+let hiddenAt = 0, lastTouch = Date.now();
+for (const ev of ['pointerdown', 'keydown', 'scroll']) window.addEventListener(ev, () => { lastTouch = Date.now(); }, { passive: true, capture: true });
+setInterval(() => { if (state && Date.now() - lastTouch > AUTOLOCK) lockNow(); }, 20000);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
   if (state && hiddenAt && Date.now() - hiddenAt > AUTOLOCK) { lockNow(); return; }
@@ -690,7 +694,18 @@ function syncBox() {
       <div class="btns"><button class="btn soft sm" data-act="syncnow"${sync.busy ? ' disabled' : ''}>${icon('cloud')}${sync.busy ? 'Синхронизация…' : 'Синхронизировать'}</button>
         <button class="btn sm" data-act="lock">${icon('lock')}Заблокировать</button>
         <a class="btn sm" href="https://gist.github.com/${esc(cfg.gistId)}" target="_blank" rel="noopener">Открыть gist</a></div>
-      <p class="small muted mt">Копилка открывается только по вашему токену и паролю. Данные на устройстве и в gist зашифрованы паролем, ключ существует, только пока страница открыта. Через 10 минут в фоне копилка запирается сама.</p>`;
+      <p class="small muted mt">Копилка открывается только по вашему токену и паролю. Через 10 минут без действий она запирается сама. После 10 неверных попыток входа подряд данные с устройства стираются (в облаке остаются).</p>
+      ${cfg.hasRecovery === false ? `<div class="notice mt">${icon('alert')}<div>Код восстановления ещё не создан. Без него забытый пароль не сбросить.</div></div>` : ''}
+      <details class="fold"><summary>Сменить пароль${icon('chevron')}</summary><div><form class="fields" data-form="chpass" autocomplete="off">
+        <input class="input" type="password" name="old" required autocomplete="current-password" placeholder="Текущий пароль" aria-label="Текущий пароль">
+        <input class="input" type="password" name="pass" required autocomplete="new-password" placeholder="Новый пароль, от 10 символов" aria-label="Новый пароль">
+        <input class="input" type="password" name="pass2" required autocomplete="new-password" placeholder="Новый пароль ещё раз" aria-label="Новый пароль ещё раз">
+        <button class="btn soft" type="submit">Сменить пароль</button>
+        <p class="small muted">Код восстановления тоже сменится. Другие устройства попросят войти с новым паролем.</p></form></div></details>
+      <details class="fold"><summary>Код восстановления${icon('chevron')}</summary><div><form class="fields" data-form="newrec" autocomplete="off">
+        <p class="small muted">Код нужен, если забудете пароль: с ним и токеном можно задать новый. Показывается один раз; прежний код перестаёт действовать.</p>
+        <input class="input" type="password" name="old" required autocomplete="current-password" placeholder="Текущий пароль" aria-label="Текущий пароль">
+        <button class="btn soft" type="submit">${icon('key')}Создать новый код</button></form></div></details>`;
 }
 function planCalc() {
   const p = plan(state);
@@ -858,7 +873,10 @@ document.addEventListener('click', e => {
     }
     case 'syncnow': runSync(); break;
     case 'lock': lockNow(); break;
-    case 'gateback': gate.create = false; gate.error = ''; renderGate(); break;
+    case 'gateback': gate.mode = 'login'; gate.error = ''; renderGate(); break;
+    case 'gaterecover': gate.mode = 'recover'; gate.error = ''; renderGate(); break;
+    case 'copycode': navigator.clipboard?.writeText(el.dataset.code).then(() => toast('Код скопирован'), () => toast('Не получилось скопировать — перепишите вручную')); break;
+    case 'savecode': download('kopilka-kod-vosstanovleniya.txt', `Копилка: код восстановления\n${el.dataset.code}\n\nНужен вместе с токеном GitHub, если забыт пароль. Храните отдельно от устройства.\n`, 'text/plain'); break;
   }
 });
 
@@ -949,64 +967,98 @@ document.addEventListener('submit', e => {
     commit('Правило добавлено');
   } else if (f === 'unlock') {
     submitGate(fd);
+  } else if (f === 'chpass' || f === 'newrec') {
+    const btn = form.querySelector('[type=submit]');
+    const fail = m => { btn.disabled = false; toast(m); };
+    if (f === 'chpass') {
+      const weak = weakPassword(fd.pass);
+      if (weak) { toast(weak); return; }
+      if (fd.pass !== fd.pass2) { toast('Новые пароли не совпадают'); return; }
+    }
+    btn.disabled = true;
+    (f === 'chpass' ? changePassword(fd.old, fd.pass, state) : newRecovery(fd.old).then(code => ({ code }))).then(r => {
+      if (r.state) { state = r.state; resetSnapshot(state); }
+      document.activeElement?.blur(); render();
+      showCode(r.code, f === 'chpass' ? 'Пароль изменён' : 'Новый код восстановления');
+    }).catch(err => { console.error(err); fail(err instanceof SyncError ? err.message : 'Не получилось. Попробуйте ещё раз.'); });
   }
 });
 
 // ---------- вход ----------
-const gate = { busy: false, error: '', create: false, token: '' };
+const gate = { busy: false, error: '', mode: 'login', token: '' };
+function showCode(code, title) {
+  openSheet(`${sheetHead(title)}
+    <p class="muted" style="margin-bottom:12px">Это код восстановления. Если забудете пароль, с ним и токеном GitHub можно задать новый. Больше он не покажется — сохраните его сейчас, отдельно от этого устройства.</p>
+    <div class="code-box">${esc(code)}</div>
+    <div class="btns" style="margin:14px 0"><button class="btn soft" data-act="copycode" data-code="${esc(code)}">Скопировать</button>
+      <button class="btn soft" data-act="savecode" data-code="${esc(code)}">${icon('download')}Сохранить файлом</button></div>
+    <button class="btn primary block" data-act="close">Я сохранил код</button>`);
+}
 function renderGate() {
   document.body.classList.add('locked');
   document.getElementById('side').innerHTML = '';
   document.getElementById('tabbar').innerHTML = '';
   document.title = 'Копилка';
   const first = !hasVault();
-  const lead = gate.create
-    ? 'В этом аккаунте GitHub ещё нет копилки. Придумайте пароль и введите его дважды: им будут зашифрованы данные. Забытый пароль не восстановить.'
+  const m = gate.mode;
+  const lead = m === 'create'
+    ? 'В этом аккаунте GitHub ещё нет копилки. Придумайте пароль и введите его дважды: им будут зашифрованы данные.'
+    : m === 'recover' ? 'Сброс пароля: введите токен GitHub, код восстановления и новый пароль.'
     : first ? 'Войдите токеном GitHub и паролем копилки.' : 'Копилка заперта. Введите токен и пароль.';
+  const newPass = m !== 'login';
   $app.innerHTML = `<div class="gate"><div class="gate-card">
     <span class="gate-logo">${icon('ruble')}</span>
     <h1>Копилка</h1>
     <p class="lead">${lead}</p>
     <form class="fields" data-form="unlock">
       <input class="input secret" name="token" required autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Токен GitHub (ghp_…)" aria-label="Токен GitHub" value="${esc(gate.token)}">
-      <input class="input" type="password" name="pass" required autocomplete="${gate.create ? 'new-password' : 'current-password'}" placeholder="${gate.create ? 'Новый пароль, от 8 символов' : 'Пароль'}" aria-label="Пароль">
-      ${gate.create ? '<input class="input" type="password" name="pass2" required autocomplete="new-password" placeholder="Пароль ещё раз" aria-label="Пароль ещё раз">' : ''}
-      <button class="btn primary block" type="submit" id="gate-go">${icon(gate.create ? 'plus' : 'lock')}<span>${gate.create ? 'Создать копилку' : 'Открыть'}</span></button>
-      ${gate.create ? '<button class="btn block" type="button" data-act="gateback">Назад</button>' : ''}
+      ${m === 'recover' ? '<input class="input" name="code" required autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="Код восстановления" aria-label="Код восстановления">' : ''}
+      <input class="input" type="password" name="pass" required autocomplete="${newPass ? 'new-password' : 'current-password'}" placeholder="${newPass ? 'Новый пароль, от 10 символов' : 'Пароль'}" aria-label="Пароль">
+      ${newPass ? '<input class="input" type="password" name="pass2" required autocomplete="new-password" placeholder="Пароль ещё раз" aria-label="Пароль ещё раз">' : ''}
+      <button class="btn primary block" type="submit" id="gate-go">${icon(m === 'create' ? 'plus' : m === 'recover' ? 'key' : 'lock')}<span></span></button>
+      ${newPass ? '<button class="btn block" type="button" data-act="gateback">Назад</button>' : '<button class="link-btn" type="button" data-act="gaterecover">Забыли пароль?</button>'}
     </form>
     <div id="gate-msg"></div>
-    ${first && !gate.create ? `<details class="fold"><summary>Первый вход: где взять токен${icon('chevron')}</summary><div><ol class="steps">
-      <li><span>Откройте <a href="https://github.com/settings/tokens/new?scopes=gist&description=Kopilka" target="_blank" rel="noopener">создание токена на GitHub</a>. Право gist уже отмечено, срок поставьте 1 год.</span></li>
+    ${first && m === 'login' ? `<details class="fold"><summary>Первый вход: где взять токен${icon('chevron')}</summary><div><ol class="steps">
+      <li><span>Откройте <a href="https://github.com/settings/tokens/new?scopes=gist&description=Kopilka" target="_blank" rel="noopener noreferrer">создание токена на GitHub</a>. Право gist уже отмечено, срок поставьте 1 год.</span></li>
       <li><span>Скопируйте токен (ghp_…) и вставьте сюда. Пароль — тот же, что на других устройствах; если копилки ещё нет, приложение предложит создать.</span></li>
       <li><span>Браузер предложит сохранить токен и пароль — согласитесь, тогда в следующий раз они подставятся сами.</span></li></ol></div></details>` : ''}
-    <p class="small faint gate-foot">Данные на устройстве и в облаке зашифрованы паролем.</p>
+    <p class="small faint gate-foot">Данные на устройстве и в облаке зашифрованы.</p>
   </div></div>`;
   gateStatus();
 }
+const GATE_GO = { login: 'Открыть', create: 'Создать копилку', recover: 'Сбросить пароль' };
 function gateStatus() {
   const go = document.getElementById('gate-go');
-  if (go) { go.disabled = gate.busy; go.querySelector('span').textContent = gate.busy ? 'Проверяю…' : gate.create ? 'Создать копилку' : 'Открыть'; }
+  if (go) { go.disabled = gate.busy; go.querySelector('span').textContent = gate.busy ? 'Проверяю…' : GATE_GO[gate.mode]; }
   const msg = document.getElementById('gate-msg');
   if (msg) msg.innerHTML = gate.error ? `<div class="notice bad">${icon('alert')}<div>${esc(gate.error)}</div></div>` : '';
 }
 function submitGate(fd) {
   if (gate.busy) return;
   gate.token = String(fd.token || '').trim();
-  if (gate.create) {
-    if (fd.pass.length < 8) { gate.error = 'Пароль должен быть не короче 8 символов.'; gateStatus(); return; }
-    if (fd.pass !== fd.pass2) { gate.error = 'Пароли не совпадают.'; gateStatus(); return; }
+  const say = m => { gate.error = m; gateStatus(); };
+  if (gate.mode !== 'login') {
+    const weak = weakPassword(fd.pass);
+    if (weak) return say(weak);
+    if (fd.pass !== fd.pass2) return say('Пароли не совпадают.');
+    if (gate.mode === 'recover' && !codeLooksValid(fd.code)) return say('В коде восстановления 24 знака. Проверьте, что он введён целиком.');
   }
   gate.busy = true; gate.error = ''; gateStatus();
-  unlock(fd.token, fd.pass, { create: gate.create, legacy: loadLegacy(), blank: defaultState() }).then(r => {
-    Object.assign(gate, { busy: false, error: '', create: false, token: '' });
+  const job = gate.mode === 'recover'
+    ? recover(fd.token, fd.code, fd.pass, { legacy: loadLegacy() })
+    : unlock(fd.token, fd.pass, { create: gate.mode === 'create', legacy: loadLegacy(), blank: defaultState() });
+  job.then(r => {
+    const was = gate.mode;
+    Object.assign(gate, { busy: false, error: '', mode: 'login', token: '' });
     start(r.state);
-    if (r.created) toast('Копилка создана');
+    if (r.code) showCode(r.code, was === 'recover' ? 'Пароль сброшен' : 'Копилка создана');
   }).catch(err => {
     gate.busy = false;
-    if (err instanceof NeedCreate) { gate.create = true; gate.error = ''; renderGate(); document.querySelector('[name=pass]')?.focus(); return; }
+    if (err instanceof NeedCreate) { gate.mode = 'create'; gate.error = ''; renderGate(); document.querySelector('[name=pass]')?.focus(); return; }
     gate.error = err instanceof SyncError ? err.message : 'Не удалось открыть копилку.';
     console.error(err);
-    gateStatus();
+    if (!hasVault() && document.querySelector('.gate details') === null && gate.mode === 'login') renderGate(); else gateStatus();
     const p = document.querySelector('[name=pass]'); if (p) { p.value = ''; p.focus(); }
   });
 }
@@ -1023,8 +1075,10 @@ function lockNow() {
   clearTimeout(sync.timer);
   closeSheet();
   if (state) saveRaw(state);
-  lock(); setPersister(null); state = null; ui.imp = null;
+  lock(); setPersister(null); state = null; ui.imp = null; draft = null;
   render();
 }
 
-render();
+// Внутри чужой страницы (рамки) приложение не запускается: защита от подмены нажатий.
+if (window.top === window.self) render();
+else document.body.textContent = 'Откройте Копилку в отдельной вкладке.';

@@ -64,19 +64,62 @@ export function save(state) {
   if (changed && onChange) onChange();
 }
 
-// Дополняет старые или импортированные данные недостающими полями.
+// Дополняет старые или импортированные данные недостающими полями и приводит всё к ожидаемым типам:
+// данные из файла копии или из облака не должны уметь подсунуть в страницу разметку или сломать её.
+const CAT_IDS = new Set(CATEGORIES.map(c => c.id));
+const isObj = x => x && typeof x === 'object' && !Array.isArray(x);
+const str = (x, max) => (typeof x === 'string' ? x : x == null ? '' : String(x)).slice(0, max);
+const fin = (x, d = 0) => { const n = Number(x); return Number.isFinite(n) ? n : d; };
+const pos = (x, d = 0) => Math.max(0, fin(x, d));
+const okId = x => typeof x === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(x);
+const okDate = x => typeof x === 'string' && /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(x);
+const okWeek = x => typeof x === 'string' && /^\d{4}-W\d{2}$/.test(x);
+const stampMap = o => Object.fromEntries(Object.entries(isObj(o) ? o : {}).filter(([k, v]) => k.length <= 60 && Number.isFinite(v)).slice(0, 20000));
+
+function cleanTx(t) {
+  if (!isObj(t) || !okDate(t.date)) return null;
+  const o = { id: okId(t.id) ? t.id : uid(), date: t.date, cat: CAT_IDS.has(t.cat) ? t.cat : 'other', amount: fin(t.amount), note: str(t.note, 300) };
+  if (t.src === 'import' || t.src === 'manual') o.src = t.src;
+  if (Number.isFinite(t.ts)) o.ts = t.ts;
+  if (Number.isFinite(t.u)) o.u = t.u;
+  if (t.catManual) o.catManual = true;
+  if (typeof t.hash === 'string') o.hash = t.hash.slice(0, 80);
+  if (isObj(t.raw)) o.raw = { bankCat: str(t.raw.bankCat, 120), mcc: str(t.raw.mcc, 8), signed: fin(t.raw.signed) };
+  return o;
+}
+
 export function migrate(s) {
   const d = defaultState();
-  const out = { ...d, ...s };
-  out.settings = { ...d.settings, ...(s.settings || {}) };
-  out.limits = { ...d.limits, ...(s.limits || {}) };
-  out.basket = { ...d.basket, ...(s.basket || {}) };
-  if (!Array.isArray(out.basket.items) || !out.basket.items.length) out.basket.items = d.basket.items;
-  out.tx = Array.isArray(s.tx) ? s.tx : [];
-  out.rules = Array.isArray(s.rules) ? s.rules : [];
-  out.weights = Array.isArray(s.weights) ? s.weights : [];
-  const m = s.meta && typeof s.meta === 'object' ? s.meta : {};
-  out.meta = { sections: { ...(m.sections || {}) }, deleted: { ...(m.deleted || {}) } };
+  if (!isObj(s)) return d;
+  const out = { version: 1 };
+  const ss = isObj(s.settings) ? s.settings : {};
+  out.settings = {
+    income: pos(ss.income), taxRate: pos(ss.taxRate, 6), rent: pos(ss.rent),
+    goalName: str(ss.goalName, 80) || d.settings.goalName, goalAmount: pos(ss.goalAmount, d.settings.goalAmount),
+    cushion: pos(ss.cushion), initialSavings: pos(ss.initialSavings),
+    startMonth: /^\d{4}-(0[1-9]|1[0-2])$/.test(ss.startMonth) ? ss.startMonth : d.settings.startMonth,
+    rememberRules: ss.rememberRules !== false,
+    theme: ['auto', 'light', 'dark'].includes(ss.theme) ? ss.theme : 'auto',
+  };
+  out.limits = { ...d.limits };
+  for (const [k, v] of Object.entries(isObj(s.limits) ? s.limits : {})) if (CAT_IDS.has(k)) out.limits[k] = pos(v);
+  out.tx = (Array.isArray(s.tx) ? s.tx : []).map(cleanTx).filter(Boolean);
+  out.rules = (Array.isArray(s.rules) ? s.rules : []).filter(r => isObj(r) && typeof r.match === 'string' && r.match.trim() && CAT_IDS.has(r.cat))
+    .slice(0, 500).map(r => ({ match: r.match.slice(0, 100), cat: r.cat }));
+  const sb = isObj(s.basket) ? s.basket : {};
+  const items = (Array.isArray(sb.items) ? sb.items : []).filter(isObj).slice(0, 300)
+    .map(i => ({ id: okId(i.id) ? i.id : uid(), group: str(i.group, 60), name: str(i.name, 120), qty: str(i.qty, 60), price: pos(i.price) }));
+  out.basket = {
+    items: items.length ? items : d.basket.items,
+    week: okWeek(sb.week) ? sb.week : d.basket.week,
+    checked: Object.fromEntries(Object.keys(isObj(sb.checked) ? sb.checked : {}).filter(okId).map(k => [k, true])),
+    history: (Array.isArray(sb.history) ? sb.history : []).filter(h => isObj(h) && okWeek(h.week)).slice(-200)
+      .map(h => ({ week: h.week, planned: pos(h.planned), actual: pos(h.actual) })),
+  };
+  out.weights = (Array.isArray(s.weights) ? s.weights : []).filter(w => isObj(w) && okDate(w.date) && fin(w.kg) >= 20 && fin(w.kg) <= 400)
+    .map(w => (Number.isFinite(w.u) ? { date: w.date, kg: fin(w.kg), u: w.u } : { date: w.date, kg: fin(w.kg) }));
+  const m = isObj(s.meta) ? s.meta : {};
+  out.meta = { sections: stampMap(m.sections), deleted: stampMap(m.deleted) };
   return out;
 }
 

@@ -4,6 +4,8 @@ import { categorize, merchantKey } from '../js/categorize.js';
 import { defaultState, isoWeek, addMonths, monthKey, today } from '../js/store.js';
 import { plan, monthSummary, forecast, habits, weightTrend, verdict } from '../js/analytics.js';
 import { merge, makeSnapshot, stamp, canon } from '../js/merge.js';
+import { migrate } from '../js/store.js';
+import { weakPassword, lockoutSeconds, normalizeCode, codeLooksValid } from '../js/guard.js';
 
 let fails = 0, passes = 0;
 function eq(name, got, want) {
@@ -141,6 +143,33 @@ eq('weight trend', Math.round(wt.perWeek * 100) / 100, 0.3);
   W.weights = []; stamp(W, sw, T + 20); sw = makeSnapshot(W);
   W.weights = [{ date: '2026-11-01', kg: 70.4 }]; stamp(W, sw, T + 30);
   eq('weight re-add', merge(W, W).weights.map(w => w.kg), [70.4]);
+}
+
+// --- защита: очистка чужих данных, пароли, задержки
+{
+  const evil = migrate({ settings: { income: '<b>', theme: '"><script>', goalName: 7 }, limits: { food: 'x', '<img>': 5 },
+    tx: [{ id: '"><img src=x onerror=alert(1)>', date: '2026-11-01', cat: '<svg>', amount: 'NaN', note: 5 }, { id: 'ok', date: 'вчера', cat: 'food', amount: 1 }, null, 'str'],
+    weights: [{ date: '2026-11-01"><b>', kg: 70 }, { date: '2026-11-02', kg: 71 }], rules: [{ match: 'a', cat: 'nope' }, { match: 'b', cat: 'rent' }],
+    basket: { week: '<i>', items: [{ id: '<x>', name: 3, price: '-5' }], checked: { '<y>': true, eggs: true }, history: [{ week: 'x' }] }, meta: { deleted: { a: 'x', b: 5 } } });
+  eq('clean tx count', evil.tx.length, 1);
+  eq('clean tx id', /^[A-Za-z0-9_-]+$/.test(evil.tx[0].id), true);
+  eq('clean tx fields', [evil.tx[0].cat, evil.tx[0].amount, evil.tx[0].note], ['other', 0, '5']);
+  eq('clean settings', [evil.settings.income, evil.settings.theme, evil.settings.goalName], [0, 'auto', '7']);
+  eq('clean limits', [evil.limits.food, '<img>' in evil.limits], [0, false]);
+  eq('clean weights', evil.weights.map(w => w.date), ['2026-11-02']);
+  eq('clean rules', evil.rules, [{ match: 'b', cat: 'rent' }]);
+  eq('clean basket', [/^\d{4}-W\d{2}$/.test(evil.basket.week), /^[A-Za-z0-9_-]+$/.test(evil.basket.items[0].id), evil.basket.items[0].price, Object.keys(evil.basket.checked), evil.basket.history.length], [true, true, 0, ['eggs'], 0]);
+  eq('clean meta', evil.meta.deleted, { b: 5 });
+  eq('clean garbage', migrate('x').tx, []);
+  eq('migrate keeps good', canon(migrate(st)), canon(st));
+  eq('weak short', !!weakPassword('abc12345'), true);
+  eq('weak digits', !!weakPassword('1234567890123'), true);
+  eq('weak common', !!weakPassword('qwerty12345'), true);
+  eq('weak repeats', !!weakPassword('aaaaaaaaaabb'), true);
+  eq('strong ok', weakPassword('синий-чайник-42-лес'), '');
+  eq('lockout', [0, 2, 3, 5, 9, 50].map(lockoutSeconds), [0, 0, 5, 30, 600, 600]);
+  eq('code normalize', normalizeCode('abcd-efgh 0o1i'), 'ABCDEFGH');
+  eq('code valid', [codeLooksValid('ABCD-EFGH-JKLM-NPQR-STUV-WXYZ'), codeLooksValid('ABCD')], [true, false]);
 }
 
 print(`${passes} passed, ${fails} failed`);

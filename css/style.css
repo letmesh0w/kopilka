@@ -395,3 +395,5 @@ body.locked .side, body.locked .tabbar { display: none; }
 .gate-foot { margin-top: 18px; }
 .input.secret { -webkit-text-security: disc; }
 body.locked main { padding-bottom: 0; }
+.code-box { font: 600 19px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .04em; text-align: center; padding: 16px 12px; border-radius: var(--r-sm); background: var(--card-2); user-select: all; -webkit-user-select: all; overflow-wrap: anywhere; }
+.link-btn { border: 0; background: none; color: var(--accent-ink); font-weight: 600; font-size: 14.5px; padding: 8px; cursor: pointer; justify-self: center; }
