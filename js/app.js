@@ -1,6 +1,6 @@
 import { CATEGORIES, CAT, NUTRITION } from './data.js';
 import {
-  load, saveRaw, resetSnapshot, setOnChange, save, migrate, defaultState, storageOk, today, monthKey, addMonths, monthName, fmtDate,
+  loadLegacy, setPersister, saveRaw, resetSnapshot, setOnChange, save, migrate, defaultState, storageOk, today, monthKey, addMonths, monthName, fmtDate,
   isoWeek, weekday, daysBetween, uid, money, num, esc,
 } from './store.js';
 import { decodeBytes, parseCSV, findHeaderRow, detectColumns, rowsToOperations, opHash } from './csv.js';
@@ -8,12 +8,11 @@ import { categorize, merchantKey } from './categorize.js';
 import {
   plan, limitFor, monthSummary, verdict, history, streak, forecast, habits, weightTrend, LIMITED, WD,
 } from './analytics.js';
-import { connect, syncNow, disconnect, getConfig, SyncError } from './sync.js';
+import { unlock, syncNow, persistLocal, lock, forget, sessionInfo, hasVault, isUnlocked, SyncError, NeedCreate } from './sync.js';
 import { merge } from './merge.js';
 import { icon, catIcon } from './icons.js';
 
-let state = load();
-resetSnapshot(state);
+let state = null; // до входа данных в памяти нет
 
 const ui = {
   month: monthKey(today()),
@@ -59,7 +58,10 @@ function toast(msg) {
 }
 
 function applyTheme() {
-  const t = state.settings.theme;
+  let t = null;
+  try {
+    if (state) { t = state.settings.theme; localStorage.setItem('kopilka.theme', t); } else t = localStorage.getItem('kopilka.theme');
+  } catch { /* приватный режим */ }
   if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
   else delete document.documentElement.dataset.theme;
 }
@@ -82,18 +84,19 @@ function safeRender() {
 document.addEventListener('focusout', () => setTimeout(() => { if (pendingRender && !isEditing() && !document.querySelector('.overlay')) safeRender(); }, 0));
 
 function applyRemote(remoteMerged) {
+  if (!state) return;
   state = merge(state, remoteMerged);
   saveRaw(state);
   resetSnapshot(state);
   safeRender();
 }
 function scheduleSync(delay = 2500) {
-  if (!getConfig()) return;
+  if (!isUnlocked()) return;
   clearTimeout(sync.timer);
   sync.timer = setTimeout(runSync, delay);
 }
 async function runSync() {
-  if (!getConfig()) return;
+  if (!isUnlocked() || !state) return;
   if (sync.busy) { sync.again = true; return; }
   sync.busy = true; sync.error = ''; showSync();
   try {
@@ -114,7 +117,7 @@ function syncTime(ts) {
   return d.toDateString() === new Date().toDateString() ? `в ${hm}` : `${d.getDate()} ${MONTH_GEN[d.getMonth()]} в ${hm}`;
 }
 function syncChip() {
-  const cfg = getConfig();
+  const cfg = sessionInfo();
   if (!cfg) return '';
   const text = sync.busy ? 'Синхронизация…' : sync.error ? 'Ошибка синхронизации' : `Синхронизировано ${syncTime(cfg.last)}`;
   return `<a href="#settings" class="sync-chip${sync.error ? ' bad' : ''}" title="${esc(sync.error || 'Данные зашифрованы и синхронизируются через GitHub Gist')}">${icon(sync.error ? 'alert' : 'cloud')}${text}</a>`;
@@ -125,9 +128,14 @@ function showSync() {
   if (box && !isEditing()) box.innerHTML = syncBox();
 }
 setOnChange(() => scheduleSync());
+// Через 10 минут в фоне копилка запирается: ключ и токен уходят из памяти.
+const AUTOLOCK = 10 * 60 * 1000;
+let hiddenAt = 0;
 document.addEventListener('visibilitychange', () => {
-  const cfg = getConfig();
-  if (document.visibilityState === 'visible' && cfg && Date.now() - (cfg.last || 0) > 20000) runSync();
+  if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
+  if (state && hiddenAt && Date.now() - hiddenAt > AUTOLOCK) { lockNow(); return; }
+  const cfg = sessionInfo();
+  if (cfg && Date.now() - (cfg.last || 0) > 20000) runSync();
 });
 window.addEventListener('online', () => runSync());
 
@@ -674,28 +682,15 @@ function doImport() {
 
 // ---------- Настройки ----------
 function syncBox() {
-  const cfg = getConfig();
-  if (cfg) {
-    return `<div class="row-item" style="padding:0 0 12px"><span class="cat-ic c-${sync.error ? 'bad' : 'good'}">${icon(sync.error ? 'alert' : 'lock')}</span>
+  const cfg = sessionInfo();
+  if (!cfg) return '';
+  return `<div class="row-item" style="padding:0 0 12px"><span class="cat-ic c-${sync.error ? 'bad' : 'good'}">${icon(sync.error ? 'alert' : 'lock')}</span>
       <div class="body"><div class="t">${sync.error ? 'Ошибка синхронизации' : 'Синхронизация включена'}</div><div class="s">Последний обмен ${syncTime(cfg.last)}</div></div></div>
       ${sync.error ? `<div class="notice bad" style="margin-bottom:12px">${icon('alert')}<div>${esc(sync.error)}</div></div>` : ''}
       <div class="btns"><button class="btn soft sm" data-act="syncnow"${sync.busy ? ' disabled' : ''}>${icon('cloud')}${sync.busy ? 'Синхронизация…' : 'Синхронизировать'}</button>
-        <a class="btn sm" href="https://gist.github.com/${esc(cfg.gistId)}" target="_blank" rel="noopener">Открыть gist</a>
-        <button class="btn sm" data-act="syncoff">Отключить здесь</button></div>
-      <p class="small muted mt">Данные шифруются вашим паролем до отправки. Отключение удаляет с устройства токен и ключ, данные остаются.</p>`;
-  }
-  return `<div class="row-item" style="padding:0 0 10px"><span class="cat-ic c-accent">${icon('lock')}</span><div class="body"><div class="t">Телефон и компьютер вместе</div>
-    <div class="s" style="white-space:normal">Данные шифруются на устройстве вашим паролем и хранятся в секретном gist на GitHub. Без пароля их не прочитать никому.</div></div></div>
-  <ol class="steps">
-    <li><span>Создайте токен: <a href="https://github.com/settings/tokens/new?scopes=gist&description=Kopilka%20sync" target="_blank" rel="noopener">открыть GitHub</a>. Право gist уже отмечено, срок можно поставить 1 год. Скопируйте токен (ghp_…).</span></li>
-    <li><span>Придумайте пароль синхронизации, одинаковый на всех устройствах. Если его забыть, облачную копию не расшифровать.</span></li>
-    <li><span>Подключите. На втором устройстве то же самое с тем же паролем.</span></li></ol>
-  <form class="fields mt" data-form="syncconnect" autocomplete="off">
-    <input class="input" type="password" name="token" required autocomplete="off" spellcheck="false" placeholder="Токен GitHub (ghp_…)" value="${esc(sync.tokenDraft)}" aria-label="Токен GitHub">
-    <div class="fields two"><input class="input" type="password" name="pass" required minlength="8" autocomplete="new-password" placeholder="Пароль синхронизации" aria-label="Пароль синхронизации">
-    <input class="input" type="password" name="pass2" required minlength="8" autocomplete="new-password" placeholder="Ещё раз" aria-label="Пароль ещё раз"></div>
-    <button class="btn primary" type="submit"${sync.busy ? ' disabled' : ''}>${sync.busy ? 'Подключаю…' : 'Подключить'}</button>
-  </form>${sync.error ? `<div class="notice bad mt">${icon('alert')}<div>${esc(sync.error)}</div></div>` : ''}`;
+        <button class="btn sm" data-act="lock">${icon('lock')}Заблокировать</button>
+        <a class="btn sm" href="https://gist.github.com/${esc(cfg.gistId)}" target="_blank" rel="noopener">Открыть gist</a></div>
+      <p class="small muted mt">Копилка открывается только по вашему токену и паролю. Данные на устройстве и в gist зашифрованы паролем, ключ существует, только пока страница открыта. Через 10 минут в фоне копилка запирается сама.</p>`;
 }
 function planCalc() {
   const p = plan(state);
@@ -720,7 +715,7 @@ function vSettings() {
     ${nrow('goalAmount', 'Сумма цели')}${nrow('cushion', 'Подушка сверх цели')}${nrow('initialSavings', 'Уже отложено до учёта')}</section>
   <section class="card"><div class="card-head"><h2>Лимиты на месяц</h2></div>
     ${LIMITED.map(id => `<label class="set-row"><span>${catIcon(id, 'sm')}${esc(CAT[id].name)}</span><input class="input" type="number" inputmode="numeric" min="0" step="100" data-limit="${id}" value="${Number(state.limits[id]) || 0}"></label>`).join('')}</section>
-  <section class="card"><div class="card-head"><h2>Синхронизация</h2></div><div id="sync-box">${syncBox()}</div></section>
+  <section class="card"><div class="card-head"><h2>Вход и синхронизация</h2></div><div id="sync-box">${syncBox()}</div></section>
   <section class="card"><div class="card-head"><h2>Правила категорий</h2></div>
     <p class="small muted" style="margin-bottom:10px">Если в описании есть этот текст, операции ставится категория. Правила появляются сами, когда вы меняете категорию у операции.</p>
     ${state.rules.length ? `<div class="rows">${state.rules.map((r, i) => `<div class="row-item">${catIcon(r.cat, 'sm')}<div class="body fields two" style="gap:8px">
@@ -734,17 +729,19 @@ function vSettings() {
   <section class="card"><div class="card-head"><h2>Как приложение на телефоне</h2></div>
     <ol class="steps"><li><span>Откройте эту страницу в Safari (на Android — в Chrome).</span></li><li><span>Нажмите «Поделиться», затем «На экран „Домой“». В Chrome — «Установить приложение».</span></li><li><span>Копилка будет открываться отдельным приложением, без адресной строки.</span></li></ol></section>
   <section class="card"><div class="card-head"><h2>Данные</h2></div>
-    <p class="small muted" style="margin-bottom:12px">Копия в файле — на всякий случай или для переноса без синхронизации. Файл не зашифрован.</p>
+    <p class="small muted" style="margin-bottom:12px">Копия в файле — на всякий случай. Файл не зашифрован, храните его аккуратно.</p>
     <div class="btns"><button class="btn sm" data-act="export">${icon('download')}Сохранить копию</button>
       <label class="btn sm"><input type="file" id="jsonfile" accept=".json,application/json" hidden>${icon('upload')}Загрузить копию</label>
       <button class="btn sm" data-act="exportcsv">${icon('file')}Операции в CSV</button></div>
-    <button class="btn danger block mt" data-act="reset">${icon('trash')}Удалить все данные с этого устройства</button></section>`;
+    <button class="btn danger block mt" data-act="reset">${icon('trash')}Выйти и удалить данные с этого устройства</button>
+    <p class="small muted mt">Копия в gist останется: войти снова можно тем же токеном и паролем.</p></section>`;
 }
 
 // ---------- Ещё ----------
 function vMore() {
   return pageHead('Ещё', `<span class="sync-slot">${syncChip()}</span>`) + `<section class="card"><div class="rows">${SIDE.filter(id => R[id].more).map(id => `<a class="row-item" href="#${id}">
-    <span class="cat-ic c-accent">${icon(R[id].ic)}</span><div class="body"><div class="t">${R[id].t}</div><div class="s">${R[id].d}</div></div>${icon('chevron')}</a>`).join('')}</div></section>
+    <span class="cat-ic c-accent">${icon(R[id].ic)}</span><div class="body"><div class="t">${R[id].t}</div><div class="s">${R[id].d}</div></div>${icon('chevron')}</a>`).join('')}
+    <button class="row-item" data-act="lock"><span class="cat-ic c-gray">${icon('lock')}</span><div class="body"><div class="t">Заблокировать</div><div class="s">Снова спросить токен и пароль</div></div></button></div></section>
     <p class="small faint" style="text-align:center;margin-top:18px">Копилка · данные хранятся на ваших устройствах</p>`;
 }
 
@@ -756,13 +753,16 @@ function renderNav(r) {
   document.getElementById('side').innerHTML = `<a class="brand" href="#home"><span class="logo">${icon('ruble')}</span>Копилка</a>
     <button class="btn primary add" data-act="add">${icon('plus')}Добавить</button>
     ${SIDE.map(id => `<a class="nav" href="#${id}"${id === r ? ' aria-current="page"' : ''}>${icon(R[id].ic)}${R[id].t}</a>`).join('')}
-    <div class="sync-line sync-slot">${syncChip()}</div>`;
+    <div class="sync-line sync-slot">${syncChip()}</div>
+    <button class="nav lock-nav" data-act="lock">${icon('lock')}Заблокировать</button>`;
   const tab = id => `<a class="tab" href="#${id}"${id === tabActive ? ' aria-current="page"' : ''}>${icon(R[id].ic)}<span>${R[id].t}</span></a>`;
   document.getElementById('tabbar').innerHTML = `${tab('home')}${tab('ops')}<button class="tab-add" data-act="add" aria-label="Добавить операцию">${icon('plus')}</button>${tab('basket')}${tab('more')}`;
 }
 
 function render() {
   applyTheme();
+  if (!state) { renderGate(); return; }
+  document.body.classList.remove('locked');
   weekRollover();
   const r = route();
   renderNav(r);
@@ -847,18 +847,18 @@ document.addEventListener('click', e => {
       break;
     }
     case 'reset': {
-      const synced = !!getConfig();
-      if (confirm(`Удалить все операции, настройки и записи веса с этого устройства?${synced ? ' Синхронизация здесь отключится, зашифрованная копия в gist останется.' : ' Сначала стоит сохранить копию.'}`)) {
-        (synced ? disconnect() : Promise.resolve()).then(() => {
-          state = defaultState(); saveRaw(state); resetSnapshot(state); sync.error = ''; render(); toast('Данные удалены с этого устройства');
-        });
-      }
+      if (!confirm('Выйти и удалить данные с этого устройства? Зашифрованная копия в gist останется, войти снова можно тем же токеном и паролем.')) break;
+      clearTimeout(sync.timer);
+      syncNow(state).then(() => true, () => confirm('Не получилось отправить последние изменения в облако. Всё равно выйти? Они пропадут.')).then(ok => {
+        if (!ok) return;
+        forget(); setPersister(null); state = null; sync.error = ''; closeSheet(); location.hash = '';
+        render(); toast('Вы вышли на этом устройстве');
+      });
       break;
     }
     case 'syncnow': runSync(); break;
-    case 'syncoff':
-      if (confirm('Отключить синхронизацию на этом устройстве? Данные останутся и здесь, и в gist.')) disconnect().then(() => { sync.error = ''; render(); toast('Синхронизация отключена'); });
-      break;
+    case 'lock': lockNow(); break;
+    case 'gateback': gate.create = false; gate.error = ''; renderGate(); break;
   }
 });
 
@@ -947,22 +947,84 @@ document.addEventListener('submit', e => {
     state.rules = state.rules.filter(r => r.match !== m);
     state.rules.unshift({ match: m, cat: fd.cat });
     commit('Правило добавлено');
-  } else if (f === 'syncconnect') {
-    if (fd.pass !== fd.pass2) { sync.error = 'Пароли не совпадают.'; sync.tokenDraft = fd.token; showSync(); return; }
-    if (fd.pass.length < 8) { sync.error = 'Пароль должен быть не короче 8 символов.'; sync.tokenDraft = fd.token; showSync(); return; }
-    sync.error = ''; sync.busy = true; sync.tokenDraft = fd.token;
-    document.activeElement?.blur(); showSync();
-    connect(fd.token, fd.pass, state).then(r => {
-      sync.busy = false; sync.tokenDraft = '';
-      applyRemote(r.state); render();
-      toast(r.created ? 'Синхронизация включена' : 'Подключено: данные объединены');
-    }).catch(err => {
-      sync.busy = false;
-      sync.error = err instanceof SyncError ? err.message : 'Не удалось подключиться.';
-      console.error(err); showSync();
-    });
+  } else if (f === 'unlock') {
+    submitGate(fd);
   }
 });
 
+// ---------- вход ----------
+const gate = { busy: false, error: '', create: false, token: '' };
+function renderGate() {
+  document.body.classList.add('locked');
+  document.getElementById('side').innerHTML = '';
+  document.getElementById('tabbar').innerHTML = '';
+  document.title = 'Копилка';
+  const first = !hasVault();
+  const lead = gate.create
+    ? 'В этом аккаунте GitHub ещё нет копилки. Придумайте пароль и введите его дважды: им будут зашифрованы данные. Забытый пароль не восстановить.'
+    : first ? 'Войдите токеном GitHub и паролем копилки.' : 'Копилка заперта. Введите токен и пароль.';
+  $app.innerHTML = `<div class="gate"><div class="gate-card">
+    <span class="gate-logo">${icon('ruble')}</span>
+    <h1>Копилка</h1>
+    <p class="lead">${lead}</p>
+    <form class="fields" data-form="unlock">
+      <input class="input secret" name="token" required autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Токен GitHub (ghp_…)" aria-label="Токен GitHub" value="${esc(gate.token)}">
+      <input class="input" type="password" name="pass" required autocomplete="${gate.create ? 'new-password' : 'current-password'}" placeholder="${gate.create ? 'Новый пароль, от 8 символов' : 'Пароль'}" aria-label="Пароль">
+      ${gate.create ? '<input class="input" type="password" name="pass2" required autocomplete="new-password" placeholder="Пароль ещё раз" aria-label="Пароль ещё раз">' : ''}
+      <button class="btn primary block" type="submit" id="gate-go">${icon(gate.create ? 'plus' : 'lock')}<span>${gate.create ? 'Создать копилку' : 'Открыть'}</span></button>
+      ${gate.create ? '<button class="btn block" type="button" data-act="gateback">Назад</button>' : ''}
+    </form>
+    <div id="gate-msg"></div>
+    ${first && !gate.create ? `<details class="fold"><summary>Первый вход: где взять токен${icon('chevron')}</summary><div><ol class="steps">
+      <li><span>Откройте <a href="https://github.com/settings/tokens/new?scopes=gist&description=Kopilka" target="_blank" rel="noopener">создание токена на GitHub</a>. Право gist уже отмечено, срок поставьте 1 год.</span></li>
+      <li><span>Скопируйте токен (ghp_…) и вставьте сюда. Пароль — тот же, что на других устройствах; если копилки ещё нет, приложение предложит создать.</span></li>
+      <li><span>Браузер предложит сохранить токен и пароль — согласитесь, тогда в следующий раз они подставятся сами.</span></li></ol></div></details>` : ''}
+    <p class="small faint gate-foot">Данные на устройстве и в облаке зашифрованы паролем.</p>
+  </div></div>`;
+  gateStatus();
+}
+function gateStatus() {
+  const go = document.getElementById('gate-go');
+  if (go) { go.disabled = gate.busy; go.querySelector('span').textContent = gate.busy ? 'Проверяю…' : gate.create ? 'Создать копилку' : 'Открыть'; }
+  const msg = document.getElementById('gate-msg');
+  if (msg) msg.innerHTML = gate.error ? `<div class="notice bad">${icon('alert')}<div>${esc(gate.error)}</div></div>` : '';
+}
+function submitGate(fd) {
+  if (gate.busy) return;
+  gate.token = String(fd.token || '').trim();
+  if (gate.create) {
+    if (fd.pass.length < 8) { gate.error = 'Пароль должен быть не короче 8 символов.'; gateStatus(); return; }
+    if (fd.pass !== fd.pass2) { gate.error = 'Пароли не совпадают.'; gateStatus(); return; }
+  }
+  gate.busy = true; gate.error = ''; gateStatus();
+  unlock(fd.token, fd.pass, { create: gate.create, legacy: loadLegacy(), blank: defaultState() }).then(r => {
+    Object.assign(gate, { busy: false, error: '', create: false, token: '' });
+    start(r.state);
+    if (r.created) toast('Копилка создана');
+  }).catch(err => {
+    gate.busy = false;
+    if (err instanceof NeedCreate) { gate.create = true; gate.error = ''; renderGate(); document.querySelector('[name=pass]')?.focus(); return; }
+    gate.error = err instanceof SyncError ? err.message : 'Не удалось открыть копилку.';
+    console.error(err);
+    gateStatus();
+    const p = document.querySelector('[name=pass]'); if (p) { p.value = ''; p.focus(); }
+  });
+}
+function start(st) {
+  state = st;
+  resetSnapshot(state);
+  setPersister(persistLocal);
+  sync.error = '';
+  document.activeElement?.blur();
+  render();
+  runSync();
+}
+function lockNow() {
+  clearTimeout(sync.timer);
+  closeSheet();
+  if (state) saveRaw(state);
+  lock(); setPersister(null); state = null; ui.imp = null;
+  render();
+}
+
 render();
-if (getConfig()) runSync();

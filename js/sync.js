@@ -1,56 +1,42 @@
-// Синхронизация через секретный GitHub Gist. В gist лежит только зашифрованный файл.
-import { deriveKey, seal, unseal, newSalt, toB64, fromB64, ITERATIONS } from './crypto.js';
+// Вход и синхронизация.
+// Приложение открывается только по токену GitHub и паролю. Данные на устройстве и в секретном gist
+// зашифрованы одним ключом, который выводится из пароля и живёт только в памяти открытой вкладки.
+import { deriveKey, seal, unseal, newSalt, toB64, fromB64, ITERATIONS, LOCAL_AAD } from './crypto.js';
 import { merge, canon } from './merge.js';
-import { migrate } from './store.js';
+import { migrate, LEGACY_KEY } from './store.js';
 
-const CFG_KEY = 'kopilka.sync';
+const VAULT = 'kopilka.vault';
+const LAST = 'kopilka.syncLast';
 const FILE = 'kopilka.enc.json';
 const DESC = 'Копилка: зашифрованная синхронизация (без пароля не читается)';
+const BAD = 'Неверный токен или пароль.';
 
 export class SyncError extends Error {}
+/** В аккаунте GitHub нет копилки: можно создать новую (нужно подтвердить пароль). */
+export class NeedCreate extends SyncError {}
 
 const api = () => {
   try { return localStorage.getItem('kopilka.apiBase') || 'https://api.github.com'; } catch { return 'https://api.github.com'; }
 };
+const ls = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); return true; } catch { return false; } },
+  del(k) { try { localStorage.removeItem(k); } catch { /* приватный режим */ } },
+};
 
-export function getConfig() {
-  try { return JSON.parse(localStorage.getItem(CFG_KEY)) || null; } catch { return null; }
-}
-function setConfig(c) {
-  try { if (c) localStorage.setItem(CFG_KEY, JSON.stringify(c)); else localStorage.removeItem(CFG_KEY); } catch { /* приватный режим */ }
-}
+let S = null; // { key, token, gistId, salt, iterations } — только в памяти
 
-// ---- ключ в IndexedDB (неизвлекаемый CryptoKey) ----
-let memKey = null;
-function idb() {
-  return new Promise((res, rej) => {
-    const r = indexedDB.open('kopilka', 1);
-    r.onupgradeneeded = () => r.result.createObjectStore('keys');
-    r.onsuccess = () => res(r.result);
-    r.onerror = () => rej(r.error);
-  });
+function readVault() {
+  try {
+    const v = JSON.parse(ls.get(VAULT));
+    return v && v.app === 'kopilka-vault' && v.kdf && v.iv && v.data ? v : null;
+  } catch { return null; }
 }
-async function idbDo(mode, fn) {
-  const db = await idb();
-  return new Promise((res, rej) => {
-    const t = db.transaction('keys', mode);
-    const req = fn(t.objectStore('keys'));
-    t.oncomplete = () => res(req && req.result);
-    t.onerror = () => rej(t.error);
-  });
-}
-async function storeKey(key) {
-  memKey = key;
-  try { await idbDo('readwrite', s => s.put(key, 'sync')); } catch { /* останется в памяти до закрытия */ }
-}
-async function loadKey() {
-  if (memKey) return memKey;
-  try { memKey = await idbDo('readonly', s => s.get('sync')); } catch { memKey = null; }
-  return memKey || null;
-}
-async function dropKey() {
-  memKey = null;
-  try { await idbDo('readwrite', s => s.delete('sync')); } catch { /* нечего удалять */ }
+export const hasVault = () => !!readVault();
+export const isUnlocked = () => !!S;
+export function sessionInfo() {
+  if (!S) return null;
+  return { gistId: S.gistId, last: Number(ls.get(LAST)) || 0 };
 }
 
 // ---- GitHub API ----
@@ -88,67 +74,109 @@ async function readEnvelope(gist) {
   if (!env || env.app !== 'kopilka' || !env.kdf) throw new SyncError('Файл в gist не от Копилки.');
   return env;
 }
-
 async function openOrFail(env, key, msg) {
   try { return migrate(await unseal(env, key)); } catch { throw new SyncError(msg); }
 }
-
 const filesBody = env => JSON.stringify({ files: { [FILE]: { content: JSON.stringify(env) } } });
+const findGist = list => list.find(g => g.files && g.files[FILE]);
+
+// ---- хранилище на устройстве ----
+let seq = 0, written = 0, gen = 0;
+/** Шифрует и сохраняет состояние вместе с токеном. Снимок данных берётся в момент вызова. */
+export async function persistLocal(state) {
+  if (!S) return false;
+  const n = ++seq, g = gen;
+  const s = S;
+  const env = await seal({ token: s.token, state }, s.key, s.salt, s.iterations, LOCAL_AAD);
+  if (n < written || g !== gen) return true; // уже записано более новое или с устройства вышли
+  written = n;
+  return ls.set(VAULT, JSON.stringify({ ...env, app: 'kopilka-vault', gistId: s.gistId }));
+}
+
+function dropLegacy() {
+  ls.del(LEGACY_KEY);
+  ls.del('kopilka.sync');
+  try { indexedDB.deleteDatabase('kopilka'); } catch { /* не было */ }
+}
 
 /**
- * Первое подключение устройства. Если gist Копилки уже есть — расшифровывает его этим паролем и сливает с локальными данными,
- * иначе создаёт новый. Возвращает слитое состояние.
+ * Вход. Если на устройстве уже есть хранилище — проверяет пароль и токен без сети
+ * (новый токен вместо истёкшего принимается, только если GitHub подтверждает, что gist принадлежит его владельцу).
+ * Если хранилища нет — находит копилку в gist этого токена и расшифровывает паролем.
+ * legacy — открытые данные старой версии на этом устройстве, они сливаются с облачными.
  */
-export async function connect(token, password, local) {
-  token = token.trim();
-  const list = await gh('/gists?per_page=100', token);
-  const found = list.find(g => g.files && g.files[FILE]);
-  let merged, gistId, saltB64, iterations;
-  let key;
+export async function unlock(token, password, { create = false, legacy = null, blank } = {}) {
+  token = String(token || '').trim();
+  if (!token || !password) throw new SyncError('Введите токен и пароль.');
+  const v = readVault();
+  if (v) {
+    const key = await deriveKey(password, fromB64(v.kdf.salt), v.kdf.iterations);
+    let box;
+    try { box = await unseal(v, key, LOCAL_AAD); } catch { throw new SyncError(BAD); }
+    if (box.token !== token) {
+      let own = false;
+      try { own = !!(await gh('/gists?per_page=100', token)).find(g => g.id === v.gistId); } catch { own = false; }
+      if (!own) throw new SyncError(BAD);
+    }
+    S = { key, token, gistId: v.gistId, salt: v.kdf.salt, iterations: v.kdf.iterations };
+    const state = migrate(box.state);
+    if (box.token !== token) await persistLocal(state);
+    return { state, created: false };
+  }
+
+  const found = findGist(await gh('/gists?per_page=100', token));
+  let state, gistId, salt, iterations, key;
   if (found) {
     const env = await readEnvelope(await gh(`/gists/${found.id}`, token));
-    saltB64 = env.kdf.salt; iterations = env.kdf.iterations;
-    key = await deriveKey(password, fromB64(saltB64), iterations);
-    const remote = await openOrFail(env, key, 'Неверный пароль синхронизации: данные в gist зашифрованы другим паролем.');
-    merged = merge(local, remote);
+    salt = env.kdf.salt; iterations = env.kdf.iterations;
+    key = await deriveKey(password, fromB64(salt), iterations);
+    const remote = await openOrFail(env, key, BAD);
+    state = legacy ? merge(legacy, remote) : remote;
     gistId = found.id;
-    await gh(`/gists/${gistId}`, token, { method: 'PATCH', body: filesBody(await seal(merged, key, saltB64, iterations)) });
+    if (canon(state) !== canon(remote)) {
+      await gh(`/gists/${gistId}`, token, { method: 'PATCH', body: filesBody(await seal(state, key, salt, iterations)) });
+    }
   } else {
+    if (!create) throw new NeedCreate('В этом аккаунте GitHub ещё нет копилки.');
     iterations = ITERATIONS;
-    const salt = newSalt();
-    saltB64 = toB64(salt);
-    key = await deriveKey(password, salt, iterations);
-    merged = local;
+    const raw = newSalt();
+    salt = toB64(raw);
+    key = await deriveKey(password, raw, iterations);
+    state = legacy || blank;
     const g = await gh('/gists', token, {
       method: 'POST',
-      body: JSON.stringify({ description: DESC, public: false, files: { [FILE]: { content: JSON.stringify(await seal(merged, key, saltB64, iterations)) } } }),
+      body: JSON.stringify({ description: DESC, public: false, files: { [FILE]: { content: JSON.stringify(await seal(state, key, salt, iterations)) } } }),
     });
     gistId = g.id;
   }
-  await storeKey(key);
-  setConfig({ token, gistId, salt: saltB64, iterations, last: Date.now() });
-  return { state: merged, created: !found };
+  S = { key, token, gistId, salt, iterations };
+  if (!(await persistLocal(state))) throw new SyncError('Браузер не даёт сохранять данные (приватный режим?).');
+  ls.set(LAST, String(Date.now()));
+  dropLegacy();
+  return { state, created: !found };
 }
 
 /** Обычная синхронизация: забрать, слить, при необходимости отправить. */
 export async function syncNow(local) {
-  const cfg = getConfig();
-  if (!cfg) return null;
-  const key = await loadKey();
-  if (!key) throw new SyncError('Ключ шифрования на этом устройстве потерян. Отключите синхронизацию и подключите заново с тем же паролем.');
-  const env = await readEnvelope(await gh(`/gists/${cfg.gistId}`, cfg.token));
-  if (env.kdf.salt !== cfg.salt) throw new SyncError('Пароль синхронизации сменили на другом устройстве. Отключите и подключите заново с новым паролем.');
-  const remote = await openOrFail(env, key, 'Не удалось расшифровать данные из gist. Подключитесь заново.');
+  if (!S) return null;
+  const s = S;
+  const env = await readEnvelope(await gh(`/gists/${s.gistId}`, s.token));
+  if (env.kdf.salt !== s.salt) throw new SyncError('Копилку в gist пересоздали с другим паролем. Выйдите на этом устройстве и войдите заново.');
+  const remote = await openOrFail(env, s.key, 'Не удалось расшифровать данные из gist.');
   const merged = merge(local, remote);
-  const same = (a, b) => canon(a) === canon(b);
-  if (!same(merged, remote)) {
-    await gh(`/gists/${cfg.gistId}`, cfg.token, { method: 'PATCH', body: filesBody(await seal(merged, key, cfg.salt, cfg.iterations)) });
+  if (canon(merged) !== canon(remote)) {
+    await gh(`/gists/${s.gistId}`, s.token, { method: 'PATCH', body: filesBody(await seal(merged, s.key, s.salt, s.iterations)) });
   }
-  setConfig({ ...cfg, last: Date.now() });
-  return { state: merged, changedLocal: !same(merged, local) };
+  ls.set(LAST, String(Date.now()));
+  return { state: merged, changedLocal: canon(merged) !== canon(local) };
 }
 
-export async function disconnect() {
-  setConfig(null);
-  await dropKey();
+/** Запереть: ключ и токен исчезают из памяти, на устройстве остаётся только шифр. */
+export function lock() { S = null; }
+
+/** Выйти на этом устройстве: удалить шифрованное хранилище. Копия в gist остаётся. */
+export function forget() {
+  S = null; gen++;
+  ls.del(VAULT); ls.del(LAST);
+  dropLegacy();
 }

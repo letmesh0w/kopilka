@@ -34,21 +34,27 @@ export function defaultState() {
 
 export let storageOk = true;
 
-export function load() {
+// Данные старой версии, лежавшие на устройстве открыто. После первого входа переносятся в шифрованное хранилище.
+export function loadLegacy() {
   let raw = null;
   try { raw = localStorage.getItem(KEY); } catch { storageOk = false; }
-  if (!raw) return defaultState();
-  try { return migrate(JSON.parse(raw)); } catch { return defaultState(); }
+  if (!raw) return null;
+  try { return migrate(JSON.parse(raw)); } catch { return null; }
 }
+export const LEGACY_KEY = KEY;
 
 // Снимок последнего сохранения: по нему save() понимает, что изменилось, и помечает это для синхронизации.
 let snap = null;
 let onChange = null;
+let persister = null;
 export function setOnChange(fn) { onChange = fn; }
+// Куда сохранять: задаётся после входа (шифрованное хранилище). До входа ничего не пишется.
+export function setPersister(fn) { persister = fn; }
 export function resetSnapshot(state) { snap = makeSnapshot(state); }
 
 export function saveRaw(state) {
-  try { localStorage.setItem(KEY, JSON.stringify(state)); storageOk = true; } catch { storageOk = false; }
+  if (!persister) return;
+  persister(state).then(ok => { storageOk = ok !== false; });
 }
 
 export function save(state) {

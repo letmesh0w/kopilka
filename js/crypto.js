@@ -1,5 +1,5 @@
 // Шифрование данных перед отправкой: AES-256-GCM, ключ из пароля через PBKDF2-SHA256.
-// Пароль никуда не отправляется и не сохраняется; на устройстве хранится только неизвлекаемый ключ.
+// Пароль никуда не отправляется и не сохраняется; ключ живёт только в памяти открытой вкладки.
 
 export const ITERATIONS = 600000;
 const te = new TextEncoder();
@@ -31,15 +31,17 @@ export async function deriveKey(password, salt, iterations = ITERATIONS) {
   );
 }
 
-const AAD = te.encode('kopilka-sync-v1');
+export const AAD = te.encode('kopilka-sync-v1');      // файл в gist
+export const LOCAL_AAD = te.encode('kopilka-local-v1'); // хранилище на устройстве
 
-export async function seal(obj, key, saltB64, iterations) {
+// JSON.stringify выполняется сразу при вызове, поэтому дальнейшие правки obj в шифр не попадут.
+export async function seal(obj, key, saltB64, iterations, aad = AAD) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: AAD }, key, te.encode(JSON.stringify(obj)));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, te.encode(JSON.stringify(obj)));
   return { app: 'kopilka', v: 1, kdf: { name: 'PBKDF2-SHA256', iterations, salt: saltB64 }, cipher: 'AES-256-GCM', iv: toB64(iv), data: toB64(ct) };
 }
 
-export async function unseal(env, key) {
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(env.iv), additionalData: AAD }, key, fromB64(env.data));
+export async function unseal(env, key, aad = AAD) {
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(env.iv), additionalData: aad }, key, fromB64(env.data));
   return JSON.parse(td.decode(pt));
 }
