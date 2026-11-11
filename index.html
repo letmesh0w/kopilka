@@ -4,22 +4,27 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Копилка</title>
-  <meta name="description" content="Учёт дохода и трат, накопления на цель, корзина продуктов и заготовки на неделю.">
-  <meta name="theme-color" content="#fcfcfb" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#1a1a19" media="(prefers-color-scheme: dark)">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M9 22V13h3v9zm5.5 0V9h3v13zM20 22v-6h3v6z' fill='white'/%3E%3C/svg%3E">
+  <meta name="description" content="Накопления на цель, бюджет по категориям, импорт банковских выписок, корзина продуктов и заготовки на неделю.">
+  <meta name="theme-color" content="#f2f3f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0c0d10" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Копилка">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-  <header class="top">
-    <div class="wrap">
-      <div class="brandrow"><a class="brand" href="#overview">Копилка</a><a id="sync-status" class="sync" href="#settings" hidden></a></div>
-      <nav id="nav" aria-label="Разделы"></nav>
-    </div>
-  </header>
-  <main id="app" class="wrap" tabindex="-1"></main>
+  <div class="shell">
+    <aside class="side" id="side" aria-label="Разделы"></aside>
+    <main id="app" tabindex="-1"></main>
+  </div>
+  <nav class="tabbar" id="tabbar" aria-label="Разделы"></nav>
+  <div id="sheet-root"></div>
   <div id="toast" role="status" aria-live="polite"></div>
-  <noscript><p class="wrap">Для работы нужен JavaScript.</p></noscript>
+  <noscript><p style="padding:16px">Для работы нужен JavaScript.</p></noscript>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

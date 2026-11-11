@@ -159,7 +159,7 @@ export function habits(state, monthsBack = 3, basketWeekCost = 0) {
     const share = c => (byCat[c] || 0) / exp.reduce((a, t) => a + t.amount, 0);
     if (cafe.length) {
       insights.push(`Кафе и доставка: ${cafe.length} раз за период, в среднем ${num(cafeSum / cafe.length)} ₽ за раз` +
-        (homeDay ? `. На эти деньги можно было бы питаться дома ${num(cafeSum / homeDay)} дн..` : '.'));
+        (homeDay ? `. На эти деньги можно было бы питаться дома ${num(cafeSum / homeDay)} дн.` : '.'));
     }
     if (small.length) insights.push(`Мелкие траты до 500 ₽: ${small.length} шт., в среднем ${num(smallSum / nMonths)} ₽ в месяц.`);
     if (subs.length) insights.push(`Похоже на регулярные платежи: ${subs.length}, вместе около ${num(subs.reduce((a, s) => a + s.monthly, 0))} ₽ в месяц. Проверьте, все ли нужны.`);
