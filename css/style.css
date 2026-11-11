@@ -101,14 +101,15 @@ input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent);
 .bar > span { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); border-radius: 5px; }
 .bar > span.over { background: var(--bad); }
 .bar.big { height: 14px; border-radius: 7px; }
-.bars { display: grid; grid-template-columns: minmax(120px, 210px) 1fr auto; gap: 8px 14px; align-items: center; }
+.brow { display: grid; grid-template-columns: 200px 1fr 250px; gap: 4px 14px; align-items: center; margin: 9px 0; }
+.bars--avg .brow { grid-template-columns: 200px 1fr 90px; }
 .bars .name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bars .val { font-size: 13px; text-align: right; color: var(--text-2); }
 .bars .bar { cursor: default; }
 .bars .marker { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--text-2); }
 @media (max-width: 560px) {
-  .bars { grid-template-columns: 1fr auto; }
-  .bars .bar { grid-column: 1 / -1; margin-bottom: 6px; }
+  .brow, .bars--avg .brow { grid-template-columns: 1fr auto; margin: 12px 0; }
+  .brow .bar { grid-column: 1 / -1; grid-row: 2; }
 }
 
 /* таблицы */

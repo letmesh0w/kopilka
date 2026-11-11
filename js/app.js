@@ -96,9 +96,9 @@ function barRow(name, spent, limit, note = '') {
     val = `${num(spent)} ₽ · вне плана`;
   }
   const title = `${name}: ${val}${note ? '. ' + note : ''}`;
-  return `<div class="name" title="${esc(title)}">${esc(name)}</div>
+  return `<div class="brow"><div class="name" title="${esc(title)}">${esc(name)}</div>
     <div class="bar" title="${esc(title)}">${inner}</div>
-    <div class="val num ${cls}">${val}</div>`;
+    <div class="val num ${cls}">${val}</div></div>`;
 }
 
 function columns(items, { ref = null, h = 160 } = {}) {
@@ -151,7 +151,7 @@ function vOverview() {
   <div class="figures">
     <div class="figure"><div class="label">Доход</div><div class="value">${money(v.income)}</div><div class="sub">план ${money(p.income)}</div></div>
     <div class="figure"><div class="label">Траты</div><div class="value">${money(v.spent)}</div><div class="sub">план ${money(p.spend)} с налогом и арендой</div></div>
-    <div class="figure"><div class="label">Отложено</div><div class="value">${money(v.saved)}</div><div class="sub">план ${money(p.savings)}</div></div>
+    <div class="figure"><div class="label">Отложено</div><div class="value">${money(v.saved)}</div><div class="sub">${p.income ? `план ${money(p.savings)}` : 'план не задан'}</div></div>
     <div class="figure"><div class="label">Не распределено</div><div class="value">${money(v.left)}</div><div class="sub">доход − траты − отложено</div></div>
   </div>
   <p>${v.met ? '<span class="status good">План накоплений выполнен</span>'
@@ -166,7 +166,7 @@ function vOverview() {
 
   const hist = history(state).slice(-12);
   h += `<h2>Отложено по месяцам</h2>
-  ${columns(hist.map(x => ({
+  ${hist.every(x => !x.saved) ? '<p class="muted">Пока ничего не отложено.</p>' : columns(hist.map(x => ({
     label: monthName(x.month, true),
     value: x.saved,
     top: x.saved ? num(x.saved) : '',
@@ -176,7 +176,7 @@ function vOverview() {
   <div class="table-wrap"><table>
     <thead><tr><th>Месяц</th><th class="r">Доход</th><th class="r">Траты</th><th class="r">Отложено</th><th>Итог</th></tr></thead>
     <tbody>${hist.slice().reverse().map(x => `<tr${x.count ? '' : ' class="dim"'}>
-      <td>${monthName(x.month)}</td><td class="r num">${num(x.income)}</td><td class="r num">${num(x.spent)}</td><td class="r num">${num(x.saved)}</td>
+      <td class="num">${monthName(x.month, true)} ${x.month.slice(0, 4)}</td><td class="r num">${num(x.income)}</td><td class="r num">${num(x.spent)}</td><td class="r num">${num(x.saved)}</td>
       <td>${x.month === cur ? '<span class="status neutral">идёт</span>' : !x.count ? '<span class="muted">нет данных</span>' : x.met ? '<span class="status good">выполнен</span>' : '<span class="status bad">не выполнен</span>'}</td></tr>`).join('')}</tbody>
   </table></div>`;
 
@@ -380,12 +380,12 @@ function vHabits() {
   if (hb.insights.length) h += `<h2>Выводы</h2><ul>${hb.insights.map(s => `<li>${esc(s)}</li>`).join('')}</ul>`;
 
   const maxAvg = Math.max(...hb.catAvg.map(c => Math.max(c.avg, c.limit)));
-  h += `<h2>Средние траты в месяц</h2><p class="muted small">Риска на полосе — лимит категории.</p><div class="bars">${hb.catAvg.map(c => {
+  h += `<h2>Средние траты в месяц</h2><p class="muted small">Риска на полосе — лимит категории.</p><div class="bars bars--avg">${hb.catAvg.map(c => {
     const over = c.limit > 0 && c.avg > c.limit;
     const t = `${CAT[c.cat].name}: в среднем ${money(c.avg)} в месяц${c.limit ? `, лимит ${money(c.limit)}` : ''}`;
-    return `<div class="name" title="${esc(t)}">${esc(CAT[c.cat].name)}</div>
+    return `<div class="brow"><div class="name" title="${esc(t)}">${esc(CAT[c.cat].name)}</div>
       <div class="bar" title="${esc(t)}"><span class="${over ? 'over' : ''}" style="width:${(c.avg / maxAvg) * 100}%"></span>${c.limit ? `<i class="marker" style="left:calc(${(c.limit / maxAvg) * 100}% - 1px)"></i>` : ''}</div>
-      <div class="val num${over ? ' bad' : ''}">${num(c.avg)} ₽</div>`;
+      <div class="val num${over ? ' bad' : ''}">${num(c.avg)} ₽</div></div>`;
   }).join('')}</div>`;
 
   h += `<h2>По дням недели</h2><p class="muted small">Без аренды, налога и переводов людям, сумма за период.</p>
