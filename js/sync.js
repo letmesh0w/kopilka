@@ -3,10 +3,7 @@
 // В секретном gist данные зашифрованы ключом из пароля. На устройстве — ключом из токена и пароля вместе:
 // украденное хранилище нельзя подбирать по паролю, не зная токена, и в нём не видно даже адреса gist.
 // Ключи живут только в памяти открытой вкладки.
-import {
-  deriveKey, deriveRaw, importRaw, seal, unseal, newSalt, toB64, fromB64, ITERATIONS, LOCAL_AAD,
-  newRecoveryCode, wrapWithCode, unwrapWithCode,
-} from './crypto.js';
+import { deriveKey, seal, unseal, newSalt, toB64, fromB64, ITERATIONS, LOCAL_AAD } from './crypto.js';
 import { lockoutSeconds, WIPE_AFTER } from './guard.js';
 import { merge, canon } from './merge.js';
 import { migrate, LEGACY_KEY } from './store.js';
@@ -34,7 +31,7 @@ const ls = {
   del(k) { try { localStorage.removeItem(k); } catch { /* приватный режим */ } },
 };
 
-let S = null; // { key, lkey, lsalt, token, gistId, salt, iterations, rec } — только в памяти
+let S = null; // { key, lkey, lsalt, token, gistId, salt, iterations } — только в памяти
 
 function readVault() {
   try {
@@ -47,7 +44,7 @@ export const hasVault = () => !!readVault();
 export const isUnlocked = () => !!S;
 export function sessionInfo() {
   if (!S) return null;
-  return { gistId: S.gistId, last: Number(ls.get(LAST)) || 0, hasRecovery: S.rec === undefined ? null : !!S.rec };
+  return { gistId: S.gistId, last: Number(ls.get(LAST)) || 0 };
 }
 
 // ---- GitHub API ----
@@ -139,10 +136,10 @@ function dropLegacy() {
   try { indexedDB.deleteDatabase('kopilka'); } catch { /* не было */ }
 }
 
-async function openSession(token, password, { gistId, salt, iterations, key, rec }) {
+async function openSession(token, password, { gistId, salt, iterations, key }) {
   const lraw = newSalt();
   const lkey = await deriveKey(localSecret(token, password), lraw, ITERATIONS);
-  S = { key, lkey, lsalt: toB64(lraw), token, gistId, salt, iterations, rec };
+  S = { key, lkey, lsalt: toB64(lraw), token, gistId, salt, iterations };
 }
 
 /** Пробует открыть хранилище устройства. null — не подошло. */
@@ -154,34 +151,31 @@ async function openVault(v, token, password) {
         return [k, await unseal(v, k, LOCAL_AAD)];
       })();
       const key = await deriveKey(password, fromB64(box.gsalt), box.giter);
-      S = { key, lkey, lsalt: v.kdf.salt, token, gistId: box.gistId, salt: box.gsalt, iterations: box.giter, rec: undefined };
+      S = { key, lkey, lsalt: v.kdf.salt, token, gistId: box.gistId, salt: box.gsalt, iterations: box.giter };
       return migrate(box.state);
     }
     // хранилище первой версии замка: ключ только из пароля, токен внутри
     const key = await deriveKey(password, fromB64(v.kdf.salt), v.kdf.iterations);
     const box = await unseal(v, key, LOCAL_AAD);
     if (box.token !== token) return null;
-    await openSession(token, password, { gistId: v.gistId, salt: v.kdf.salt, iterations: v.kdf.iterations, key, rec: undefined });
+    await openSession(token, password, { gistId: v.gistId, salt: v.kdf.salt, iterations: v.kdf.iterations, key });
     const state = migrate(box.state);
     await persistLocal(state);
     return state;
   } catch { return null; }
 }
 
-/** Новая соль, новый ключ из пароля, новый код восстановления. */
+/** Новая соль и новый ключ из пароля. */
 async function freshKeys(password) {
   const raw = newSalt();
-  const bits = await deriveRaw(password, raw, ITERATIONS);
-  const code = newRecoveryCode();
-  return { salt: toB64(raw), iterations: ITERATIONS, key: await importRaw(bits), rec: await wrapWithCode(bits, code), code };
+  return { salt: toB64(raw), iterations: ITERATIONS, key: await deriveKey(password, raw, ITERATIONS) };
 }
-const sealGist = async (state, k) => ({ ...(await seal(state, k.key, k.salt, k.iterations)), ...(k.rec ? { rec: k.rec } : {}) });
+const sealGist = (state, k) => seal(state, k.key, k.salt, k.iterations);
 
 /**
  * Вход. Сначала пробует хранилище устройства (без сети). Если оно не открылось — возможно, сменили токен или пароль
  * на другом устройстве: тогда копилка ищется в gist этого токена и расшифровывается паролем.
  * legacy — открытые данные старой версии на этом устройстве, они сливаются с облачными.
- * Возвращает { state, created, code } — code (код восстановления) только при создании.
  */
 export async function unlock(token, password, { create = false, legacy = null, blank } = {}) {
   token = String(token || '').trim();
@@ -198,20 +192,20 @@ export async function unlock(token, password, { create = false, legacy = null, b
     throw e;
   }
   const found = findGist(list);
-  let state, k, gistId, code;
+  let state, k, gistId;
   if (found) {
     const env = await readEnvelope(await gh(`/gists/${found.id}`, token));
-    k = { salt: env.kdf.salt, iterations: env.kdf.iterations, rec: env.rec || null };
+    k = { salt: env.kdf.salt, iterations: env.kdf.iterations };
     k.key = await deriveKey(password, fromB64(k.salt), k.iterations);
     let remote;
     try { remote = migrate(await unseal(env, k.key)); } catch { throw new SyncError(guardFail()); }
     state = legacy ? merge(legacy, remote) : remote;
     gistId = found.id;
-    if (canon(state) !== canon(remote)) await gh(`/gists/${gistId}`, token, { method: 'PATCH', body: filesBody(await sealGist(state, k)) });
+    if (env.rec || canon(state) !== canon(remote)) await gh(`/gists/${gistId}`, token, { method: 'PATCH', body: filesBody(await sealGist(state, k)) });
   } else {
     if (v) throw new SyncError(guardFail());
     if (!create) throw new NeedCreate('В этом аккаунте GitHub ещё нет копилки.');
-    k = await freshKeys(password); code = k.code;
+    k = await freshKeys(password);
     state = legacy || blank;
     const g = await gh('/gists', token, {
       method: 'POST',
@@ -224,72 +218,23 @@ export async function unlock(token, password, { create = false, legacy = null, b
   ls.set(LAST, String(Date.now()));
   guardOk();
   dropLegacy();
-  return { state, created: !found, code };
-}
-
-/** Перешифровывает облако и устройство новым паролем. Возвращает новый код восстановления. */
-async function rekey(state, newPassword) {
-  const s = S;
-  const k = await freshKeys(newPassword);
-  await gh(`/gists/${s.gistId}`, s.token, { method: 'PATCH', body: filesBody(await sealGist(state, k)) });
-  await openSession(s.token, newPassword, { gistId: s.gistId, ...k });
-  await persistLocal(state);
-  ls.set(LAST, String(Date.now()));
-  return k.code;
-}
-
-async function checkPassword(password) {
-  const env = await readEnvelope(await gh(`/gists/${S.gistId}`, S.token));
-  const bits = await deriveRaw(password, fromB64(env.kdf.salt), env.kdf.iterations);
-  let remote;
-  try { remote = migrate(await unseal(env, await importRaw(bits))); } catch { throw new SyncError('Текущий пароль неверный.'); }
-  return { env, bits, remote };
+  return { state, created: !found };
 }
 
 /** Смена пароля (нужен текущий). Остальные устройства попросят войти с новым паролем. */
 export async function changePassword(oldPassword, newPassword, local) {
   if (!S) throw new SyncError('Копилка заперта.');
-  const { remote } = await checkPassword(oldPassword);
-  const state = merge(local, remote);
-  return { state, code: await rekey(state, newPassword) };
-}
-
-/** Новый код восстановления (нужен текущий пароль). Старый код перестаёт действовать. */
-export async function newRecovery(password) {
-  if (!S) throw new SyncError('Копилка заперта.');
-  const { env, bits } = await checkPassword(password);
-  const code = newRecoveryCode();
-  const rec = await wrapWithCode(bits, code);
-  await gh(`/gists/${S.gistId}`, S.token, { method: 'PATCH', body: filesBody({ ...env, rec }) });
-  S.rec = rec;
-  return code;
-}
-
-/** Забыли пароль: токен + код восстановления открывают облачную копию, задаётся новый пароль. */
-export async function recover(token, code, newPassword, { legacy = null } = {}) {
-  token = String(token || '').trim();
-  guardCheck();
-  let list;
-  try { list = await gh('/gists?per_page=100', token); } catch (e) {
-    if (/не принял токен/.test(e.message)) throw new SyncError(guardFail());
-    throw e;
-  }
-  const found = findGist(list);
-  if (!found) throw new SyncError('В этом аккаунте GitHub нет копилки.');
-  const env = await readEnvelope(await gh(`/gists/${found.id}`, token));
-  if (!env.rec) throw new SyncError('Для этой копилки код восстановления не создавали.');
+  const s = S;
+  const env = await readEnvelope(await gh(`/gists/${s.gistId}`, s.token));
   let remote;
-  try { remote = migrate(await unseal(env, await importRaw(await unwrapWithCode(env.rec, code)))); } catch {
-    guardFail();
-    throw new SyncError('Код восстановления не подошёл.');
-  }
-  const state = legacy ? merge(legacy, remote) : remote;
-  S = { token, gistId: found.id };
-  let fresh;
-  try { fresh = await rekey(state, newPassword); } catch (e) { S = null; throw e; }
-  guardOk();
-  dropLegacy();
-  return { state, code: fresh };
+  try { remote = migrate(await unseal(env, await deriveKey(oldPassword, fromB64(env.kdf.salt), env.kdf.iterations))); } catch { throw new SyncError('Текущий пароль неверный.'); }
+  const state = merge(local, remote);
+  const k = await freshKeys(newPassword);
+  await gh(`/gists/${s.gistId}`, s.token, { method: 'PATCH', body: filesBody(await sealGist(state, k)) });
+  await openSession(s.token, newPassword, { gistId: s.gistId, ...k });
+  await persistLocal(state);
+  ls.set(LAST, String(Date.now()));
+  return { state };
 }
 
 /** Обычная синхронизация: забрать, слить, при необходимости отправить. */
@@ -299,9 +244,8 @@ export async function syncNow(local) {
   const env = await readEnvelope(await gh(`/gists/${s.gistId}`, s.token));
   if (env.kdf.salt !== s.salt) throw new SyncError('Пароль сменили на другом устройстве. Заблокируйте копилку и войдите с новым паролем.');
   const remote = await openOrFail(env, s.key, 'Не удалось расшифровать данные из gist.');
-  s.rec = env.rec || null;
   const merged = merge(local, remote);
-  if (canon(merged) !== canon(remote)) {
+  if (env.rec || canon(merged) !== canon(remote)) { // env.rec — остаток убранного кода восстановления, стираем
     await gh(`/gists/${s.gistId}`, s.token, { method: 'PATCH', body: filesBody(await sealGist(merged, s)) });
   }
   ls.set(LAST, String(Date.now()));

@@ -5,7 +5,7 @@ import { defaultState, isoWeek, addMonths, monthKey, today } from '../js/store.j
 import { plan, monthSummary, forecast, habits, weightTrend, verdict } from '../js/analytics.js';
 import { merge, makeSnapshot, stamp, canon } from '../js/merge.js';
 import { migrate } from '../js/store.js';
-import { weakPassword, lockoutSeconds, normalizeCode, codeLooksValid } from '../js/guard.js';
+import { weakPassword, lockoutSeconds } from '../js/guard.js';
 
 let fails = 0, passes = 0;
 function eq(name, got, want) {
@@ -168,8 +168,6 @@ eq('weight trend', Math.round(wt.perWeek * 100) / 100, 0.3);
   eq('weak repeats', !!weakPassword('aaaaaaaaaabb'), true);
   eq('strong ok', weakPassword('синий-чайник-42-лес'), '');
   eq('lockout', [0, 2, 3, 5, 9, 50].map(lockoutSeconds), [0, 0, 5, 30, 600, 600]);
-  eq('code normalize', normalizeCode('abcd-efgh 0o1i'), 'ABCDEFGH');
-  eq('code valid', [codeLooksValid('ABCD-EFGH-JKLM-NPQR-STUV-WXYZ'), codeLooksValid('ABCD')], [true, false]);
 }
 
 print(`${passes} passed, ${fails} failed`);
