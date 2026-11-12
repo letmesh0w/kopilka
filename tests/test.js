@@ -58,7 +58,7 @@ eq('merchant key', merchantKey('PYATEROCHKA 1234 MOSCOW RUS'), 'pyaterochka');
 const cz = (desc, bankCat, mcc, signedAmount) => categorize({ desc, bankCat, mcc, signedAmount }).cat;
 eq('hosting not clothes', cz('hosting-example.ru', 'Цифровые товары', '5816', -500), 'fun');
 eq('own bank out', cz('Себе в другой банк', 'Переводы', '', -5000), 'internal');
-eq('own bank in', cz('Себе из другого банка', 'Переводы', '', 5000), 'internal');
+eq('own bank in', cz('Себе из другого банка', 'Переводы', '', 5000), 'income');
 eq('broker in', cz('Пополнение брокерского счета', 'Переводы', '', -5000), 'internal');
 eq('broker out', cz('Вывод с брокерского счета', 'Переводы', '', 5000), 'internal');
 eq('cashback move', cz('Перевод кэшбэка', 'Переводы', '', -700), 'internal');
