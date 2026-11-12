@@ -19,9 +19,10 @@ export function merchantKey(desc) {
 }
 
 // Короткие слова (до 4 букв) ищем только с начала слова, чтобы «mts» не находилось внутри посторонних слов.
-function contains(text, kw) {
+// Встроенные слова (strict) всегда ищем с начала слова: иначе «ostin» находится в «hosting».
+function contains(text, kw, strict = false) {
   const k = normalize(kw);
-  if (k.length > 4) return text.includes(k);
+  if (!strict && k.length > 4) return text.includes(k);
   let from = 0;
   while (true) {
     const i = text.indexOf(k, from);
@@ -42,7 +43,7 @@ function byKeyword(text, rules) {
     if (r.match && contains(text, r.match)) return r.cat;
   }
   for (const [kw, cat] of KEYWORD_LIST) {
-    if (contains(text, kw)) return cat;
+    if (contains(text, kw, true)) return cat;
   }
   return null;
 }
@@ -83,9 +84,16 @@ export function categorize({ desc, bankCat, mcc, signedAmount }, rules = []) {
     if (cat && CAT[cat] && CAT[cat].kind === 'expense') return { cat, amount: -abs };
     return { cat: 'income_other', amount: abs };
   }
+  // Поступление от магазина или сервиса (а не перевод и не пополнение) — это возврат покупки, а не доход.
+  if (!/перевод|пополнен|бонус|процент|дивиденд/.test(bankText)) {
+    const shop = (kw && CAT[kw] && CAT[kw].kind === 'expense' ? kw : null) || (mcc && MCC_MAP.get(Number(mcc))) || byBankCategory(bankCat);
+    if (shop && CAT[shop] && CAT[shop].kind === 'expense' && shop !== 'transfer' && shop !== 'tax') return { cat: shop, amount: -abs };
+  }
   if (kw === 'save' || kw === 'unsave') return { cat: 'unsave', amount: abs };
   if (kw === 'internal') return { cat: 'internal', amount: abs };
   if (kw === 'income_other' || /кэшбэк|кешбэк|бонус|процент/.test(bankText)) return { cat: 'income_other', amount: abs };
   if (kw && CAT[kw] && CAT[kw].kind === 'income') return { cat: kw, amount: abs };
+  // Перевод от человека («Имя Ф.») — не заработок: возврат долга, скинулись, подарок.
+  if (/перевод/.test(bankText) && /^[а-яa-z-]+ [а-яa-z]\.$/.test(text)) return { cat: 'income_other', amount: abs };
   return { cat: 'income', amount: abs };
 }

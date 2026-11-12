@@ -49,6 +49,7 @@ const P = {
   lock: '<rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
   ruble: '<circle cx="12" cy="12" r="9"/><path d="M10.2 17V7.5h3a2.6 2.6 0 0 1 0 5.2H8.6M8.6 14.9h5"/>',
+  plane: '<path d="M10.5 13.5L3 11l1.2-1.8 6.3.6 4.3-5.3a2 2 0 0 1 3 2.6l-4.1 5 1.3 7-1.9.9-2.6-6.5z"/><path d="M7 15.5l-2.5 3"/>',
   file: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 13h6M9 17h6"/>',
 };
 
@@ -60,7 +61,7 @@ export function icon(name, cls = '') {
 export const CAT_STYLE = {
   income: ['arrowIn', 'green'], income_other: ['wallet', 'green'],
   tax: ['receipt', 'gray'], rent: ['key', 'violet'],
-  food: ['cart', 'orange'], cafe: ['coffee', 'magenta'], transport: ['bus', 'blue'], bills: ['wifi', 'aqua'],
+  food: ['cart', 'orange'], cafe: ['coffee', 'magenta'], transport: ['bus', 'blue'], travel: ['plane', 'aqua'], bills: ['wifi', 'aqua'],
   sport: ['dumbbell', 'red'], home: ['house', 'yellow'], health: ['heart', 'red'], clothes: ['shirt', 'magenta'],
   fun: ['play', 'violet'], market: ['box', 'yellow'], transfer: ['people', 'blue'], other: ['dots', 'gray'],
   tech: ['monitor', 'blue'], save: ['coins', 'green'], unsave: ['coinsOut', 'orange'], internal: ['repeat', 'gray'],

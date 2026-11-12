@@ -54,6 +54,25 @@ eq('magnit kosmetik', categorize({ desc: 'MAGNIT KOSMETIK / Магнит Кос�
 eq('mts word boundary', categorize({ desc: 'SHIPMENTS LTD', signedAmount: -100 }).cat, 'other');
 eq('merchant key', merchantKey('PYATEROCHKA 1234 MOSCOW RUS'), 'pyaterochka');
 
+// --- свои счета, переводы от людей, возвраты, поездки
+const cz = (desc, bankCat, mcc, signedAmount) => categorize({ desc, bankCat, mcc, signedAmount }).cat;
+eq('hosting not clothes', cz('hosting-example.ru', 'Цифровые товары', '5816', -500), 'fun');
+eq('own bank out', cz('Себе в другой банк', 'Переводы', '', -5000), 'internal');
+eq('own bank in', cz('Себе из другого банка', 'Переводы', '', 5000), 'internal');
+eq('broker in', cz('Пополнение брокерского счета', 'Переводы', '', -5000), 'internal');
+eq('broker out', cz('Вывод с брокерского счета', 'Переводы', '', 5000), 'internal');
+eq('cashback move', cz('Перевод кэшбэка', 'Переводы', '', -700), 'internal');
+eq('person in', cz('Иван И.', 'Переводы', '', 1500), 'income_other');
+eq('person out', cz('Иван И.', 'Переводы', '', -1500), 'transfer');
+eq('salary', cz('Пополнение. OOO ROMASHKA MOSCOW', 'Переводы', '6012', 50000), 'income');
+eq('shop refund', categorize({ desc: 'Бургер Кинг', bankCat: 'Фастфуд', mcc: '5814', signedAmount: 500 }), { cat: 'cafe', amount: -500 });
+eq('dividends', cz('Выплата дивидендов по акциям', 'Дивиденды и купоны', '', 600), 'income_other');
+eq('travel agency', cz('Tutu', 'Турагентства', '4722', -5000), 'travel');
+eq('airline', cz('Some Airlines', 'Авиабилеты', '4511', -9000), 'travel');
+eq('betting', cz('BetBoom', 'Лотереи', '7995', -1000), 'fun');
+eq('gadgets', cz('Magazin tehniki', 'Гаджеты и техника', '5722', -9000), 'tech');
+eq('alco', cz('Алкомаркет', 'Супермаркеты', '5921', -800), 'food');
+
 // --- раздельные столбцы расход/приход, cp1251-подобный заголовок с преамбулой
 const alfa = `Выписка по счёту
 Период: 01.10.2026 - 31.10.2026

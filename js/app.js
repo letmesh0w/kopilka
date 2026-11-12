@@ -377,7 +377,7 @@ const sheetHead = title => `<div class="sheet-head"><h2>${esc(title)}</h2><butto
 
 // операция: добавить / изменить
 const GROUPS = {
-  expense: { label: 'Расход', cats: ['food', 'cafe', 'transport', 'market', 'home', 'fun', 'clothes', 'health', 'sport', 'bills', 'transfer', 'other', 'rent', 'tax', 'tech'] },
+  expense: { label: 'Расход', cats: ['food', 'cafe', 'transport', 'travel', 'market', 'home', 'fun', 'clothes', 'health', 'sport', 'bills', 'transfer', 'other', 'rent', 'tax', 'tech'] },
   income: { label: 'Доход', cats: ['income', 'income_other'] },
   piggy: { label: 'Копилка', cats: ['save', 'unsave', 'internal'] },
 };
