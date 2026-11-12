@@ -181,10 +181,11 @@ eq('weight trend', Math.round(wt.perWeek * 100) / 100, 0.3);
   eq('clean meta', evil.meta.deleted, { b: 5 });
   eq('clean garbage', migrate('x').tx, []);
   eq('migrate keeps good', canon(migrate(st)), canon(st));
-  eq('weak short', !!weakPassword('abc12345'), true);
+  eq('weak short', !!weakPassword('abc1234'), true);
   eq('weak digits', !!weakPassword('1234567890123'), true);
   eq('weak common', !!weakPassword('qwerty12345'), true);
   eq('weak repeats', !!weakPassword('aaaaaaaaaabb'), true);
+  eq('eight ok', weakPassword('kot-42-Zx'.slice(0, 8)), '');
   eq('strong ok', weakPassword('синий-чайник-42-лес'), '');
   eq('lockout', [0, 2, 3, 5, 9, 50].map(lockoutSeconds), [0, 0, 5, 30, 600, 600]);
 }

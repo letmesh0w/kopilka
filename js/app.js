@@ -697,7 +697,7 @@ function syncBox() {
       <p class="small muted mt">Копилка открывается только по вашему токену и паролю. Через 10 минут без действий она запирается сама. После 10 неверных попыток входа подряд данные с устройства стираются (в облаке остаются).</p>
       <details class="fold"><summary>Сменить пароль${icon('chevron')}</summary><div><form class="fields" data-form="chpass" autocomplete="off">
         <input class="input" type="password" name="old" required autocomplete="current-password" placeholder="Текущий пароль" aria-label="Текущий пароль">
-        <input class="input" type="password" name="pass" required autocomplete="new-password" placeholder="Новый пароль, от 10 символов" aria-label="Новый пароль">
+        <input class="input" type="password" name="pass" required autocomplete="new-password" placeholder="Новый пароль, от 8 символов" aria-label="Новый пароль">
         <input class="input" type="password" name="pass2" required autocomplete="new-password" placeholder="Новый пароль ещё раз" aria-label="Новый пароль ещё раз">
         <button class="btn soft" type="submit">Сменить пароль</button>
         <p class="small muted">Другие устройства попросят войти с новым паролем. Забытый пароль восстановить нельзя.</p></form></div></details>`;
@@ -991,7 +991,7 @@ function renderGate() {
     <p class="lead">${lead}</p>
     <form class="fields" data-form="unlock">
       <input class="input secret" name="token" required autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Токен GitHub (ghp_…)" aria-label="Токен GitHub" value="${esc(gate.token)}">
-      <input class="input" type="password" name="pass" required autocomplete="${newPass ? 'new-password' : 'current-password'}" placeholder="${newPass ? 'Новый пароль, от 10 символов' : 'Пароль'}" aria-label="Пароль">
+      <input class="input" type="password" name="pass" required autocomplete="${newPass ? 'new-password' : 'current-password'}" placeholder="${newPass ? 'Новый пароль, от 8 символов' : 'Пароль'}" aria-label="Пароль">
       ${newPass ? '<input class="input" type="password" name="pass2" required autocomplete="new-password" placeholder="Пароль ещё раз" aria-label="Пароль ещё раз">' : ''}
       <button class="btn primary block" type="submit" id="gate-go">${icon(m === 'create' ? 'plus' : 'lock')}<span></span></button>
       ${newPass ? '<button class="btn block" type="button" data-act="gateback">Назад</button>' : ''}

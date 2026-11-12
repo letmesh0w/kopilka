@@ -4,7 +4,7 @@
 const COMMON = ['password', 'parol', 'пароль', 'qwerty', 'йцукен', '123456', '111111', 'kopilka', 'копилка', 'letmein', 'admin', 'iloveyou', 'abc123', 'zxcvbn', 'qazwsx', '654321', 'q1w2e3'];
 export function weakPassword(p) {
   p = String(p || '');
-  if (p.length < 10) return 'Пароль должен быть не короче 10 символов.';
+  if (p.length < 8) return 'Пароль должен быть не короче 8 символов.';
   if (new Set(p).size < 6) return 'В пароле слишком мало разных символов.';
   if (/^\d+$/.test(p) && p.length < 16) return 'Пароль из одних цифр легко подобрать. Добавьте буквы или сделайте его длиннее 15 цифр.';
   const low = p.toLowerCase();
